@@ -4,11 +4,11 @@ from typing import Optional
 
 # use gpu for faster operations
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
-ROWS = 6
-COLS = 7
 
 # board object
 class Board:
+    ROWS = 6
+    COLS = 7
 
     # convert board state to tensor for neural network input
     @staticmethod
@@ -22,8 +22,8 @@ class Board:
     # create board
     def __init__(self: "Board") -> None:
         # stores bit boards for each player
-        self.player1_bits = torch.zeros((ROWS, COLS), dtype=torch.float32, device=device)
-        self.player2_bits = torch.zeros((ROWS, COLS), dtype=torch.float32, device=device)
+        self.player1_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=device)
+        self.player2_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=device)
 
         # tracks the current game turn (0 for player 1, 1 for player 2)
         self.turn = 0
@@ -41,7 +41,7 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(y - 3, 0)
-        end = min(y + 4, COLS)
+        end = min(y + 4, Board.COLS)
 
         row_slice = bits[x, start:end]
 
@@ -57,7 +57,7 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(x - 3, 0)
-        end = min(x + 4, ROWS)
+        end = min(x + 4, Board.ROWS)
 
         col_slice = bits[start:end, y]
 
@@ -78,7 +78,7 @@ class Board:
             j -= 1
 
         diag_slice = []
-        while i < ROWS and j < COLS:
+        while i < Board.ROWS and j < Board.COLS:
             diag_slice.append(bits[i, j])
             i += 1
             j += 1
@@ -97,12 +97,12 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         i, j = x, y
-        while i < ROWS - 1 and j > 0:
+        while i < Board.ROWS - 1 and j > 0:
             i += 1
             j -= 1
 
         diag_slice = []
-        while i >= 0 and j < COLS:
+        while i >= 0 and j < Board.COLS:
             diag_slice.append(bits[i, j])
             i -= 1
             j += 1
@@ -126,7 +126,7 @@ class Board:
 
     # checks if the board is full
     def is_full(self: "Board") -> bool:
-        return self.turn >= ROWS * COLS
+        return self.turn >= Board.ROWS * Board.COLS
 
     # checks if a column is full
     def is_column_full(self: "Board", col: int) -> bool:
@@ -136,7 +136,7 @@ class Board:
 
     # drops a coin in the given column
     def make_move(self: "Board", col: int) -> Optional[int]:
-        if col < 0 or col >= COLS:
+        if col < 0 or col >= Board.COLS:
             return None
 
         taken = self.player1_bits[:, col] + self.player2_bits[:, col]
@@ -144,7 +144,7 @@ class Board:
         if taken.all():
             return None  # Column full
 
-        for i in range(ROWS):
+        for i in range(Board.ROWS):
             if not taken[i]:
                 if self.turn % 2 == 0:
                     self.player1_bits[i, col] = 1
@@ -159,7 +159,7 @@ class Board:
 
     # get all valid moves
     def valid_moves(self: "Board") -> list[int]:
-        return [col for col in range(COLS) if not self.is_column_full(col)]
+        return [col for col in range(Board.COLS) if not self.is_column_full(col)]
     
     # returns if the game is done and the winner
     def game_over(self: "Board", row: Optional[int], col: int) -> tuple[bool, int]:
@@ -181,8 +181,8 @@ class Board:
     # prints the board state
     def __str__(self: "Board") -> str:
         board_str = ""
-        for i in range(ROWS - 1, -1, -1):
-            for j in range(COLS):
+        for i in range(Board.ROWS - 1, -1, -1):
+            for j in range(Board.COLS):
                 if self.player1_bits[i, j] == 1:
                     board_str += "X "
                 elif self.player2_bits[i, j] == 1:

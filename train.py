@@ -514,8 +514,8 @@ def build_training_plots(
 
 
 def update_live_training_plots(
-    fig: plt.Figure,
-    axes: list[list[plt.Axes]],
+    fig: plt.Figure, # type: ignore
+    axes: list[list[plt.Axes]], # type: ignore
     episodes: list[int],
     winners: list[int],
     game_lengths: list[int],
@@ -596,7 +596,7 @@ def update_live_training_plots(
     axes[1][1].legend()
 
     fig.suptitle(f"Training Dashboard - {run_name}", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96]) # type: ignore
     fig.canvas.draw_idle()
     plt.pause(0.001)
 
