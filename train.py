@@ -668,8 +668,8 @@ def run_training(config: Config) -> None:
     if config["watch_game"]:
         viewer = TrainingTkViewer(watch_delay=config["watch_delay"])
 
-    live_fig: plt.Figure | None = None
-    live_axes: list[list[plt.Axes]] | None = None
+    live_fig: plt.Figure | None = None # type: ignore
+    live_axes: list[list[plt.Axes]] | None = None # type: ignore
     if config["matplotlib_enabled"]:
         plt.ion()
         live_fig, live_axes_np = plt.subplots(2, 2, figsize=(15, 10))
