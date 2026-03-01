@@ -1,27 +1,20 @@
 """
-train.py — curriculum DQN training against progressively stronger MCTS opponents.
+train.py — curriculum DQN, rolling-window promotion (no separate eval).
 
-Curriculum ladder:
-  Stage 0 → random opponent   (depth 0)
-  Stage 1 → 1-ply MCTS        (depth 1)
-  ...up to MAX_MCTS_DEPTH
-
-Promotion rule (simple):
-  Every EVAL_INTERVAL training episodes, play EVAL_GAMES greedy games where
-  each game starts from a random board position (4–20 moves already played).
-  Agent must win >= EVAL_WIN_THRESHOLD of those to advance to the next stage.
+Promotion: after every 250-game window, if the agent won >= 60% of those
+games (>= 150/250) it advances to the next MCTS stage.
+Stats and promotion check happen together at the same print interval.
 """
 
 import os
 import time
-import random
 import statistics
 
 import torch
 
 from board import Board
 from agent import DQNAgent
-from mcts import MCTSOpponent
+from mcts import MCTSOpponent, FastBoard
 
 # ---------------------------------------------------------------------------
 # Config
@@ -31,17 +24,14 @@ SAVE_DIR        = "models"
 RUN_NAME        = "cf_dqn"
 NUM_EPISODES    = 50_000
 SAVE_INTERVAL   = 5_000
-REPORT_INTERVAL = 250
+WINDOW          = 250             # print + promotion check every N episodes
 
 # Curriculum
 MAX_MCTS_DEPTH  = 6
-MCTS_SIMS       = 20          # rollouts per move — reduced from 40, still strong
+MCTS_SIMS       = 20
 
-# Promotion  — every 1000 games, 200 greedy games from random positions, need 140 wins
-EVAL_INTERVAL       = 1000
-EVAL_GAMES          = 200
-EVAL_WIN_THRESHOLD  = 140     # 140/200 = 70%
-EVAL_START_MOVES    = (4, 20) # random starting position: 4 to 20 random moves pre-played
+# Promotion — 60% wins in the last WINDOW games (epsilon-inclusive)
+PROMOTE_THRESHOLD = 0.60          # 150 / 250
 
 # DQN hyper-params
 LR              = 2e-3
@@ -58,7 +48,7 @@ WIN_REWARD  =  1.0
 LOSS_REWARD = -1.0
 DRAW_REWARD =  0.2
 
-RESUME_PATH = ""   # path to .pth to resume from, or ""
+RESUME_PATH = ""
 
 # ---------------------------------------------------------------------------
 
@@ -72,24 +62,29 @@ class ANSI:
 
 
 # ---------------------------------------------------------------------------
-# Training episode
+# Training episode — entirely on FastBoard except agent inference
 # ---------------------------------------------------------------------------
 
 def play_episode(agent: DQNAgent, opponent: MCTSOpponent, agent_is_p1: bool) -> tuple[int, int]:
     board        = Board()
     agent_player = 1 if agent_is_p1 else 2
-    opp_player   = 2 if agent_is_p1 else 1
+    opp_player   = 3 - agent_player
     trajectory   = []
 
     while True:
-        current = 1 if board.turn % 2 == 0 else 2
+        current = (board.turn & 1) + 1
         valid   = board.valid_moves()
         if not valid:
             winner = 0
             break
 
         state  = Board.board_to_tensor(board)
-        action = agent.select_action(board) if current == agent_player else opponent.select_action(board)
+
+        if current == agent_player:
+            action = agent.select_action(board)
+        else:
+            # Opponent works on FastBoard — convert once per opponent move
+            action = opponent.select_action(board)
 
         row = board.make_move(action)
         if row is None:
@@ -120,100 +115,6 @@ def play_episode(agent: DQNAgent, opponent: MCTSOpponent, agent_is_p1: bool) -> 
 
 
 # ---------------------------------------------------------------------------
-# Eval — greedy games from random mid-game starting positions
-# Runs entirely on FastBoard — zero PyTorch tensor ops during eval
-# ---------------------------------------------------------------------------
-
-def _random_start_fastboard(min_moves: int, max_moves: int) -> "FastBoard":
-    """Build a random mid-game FastBoard with min_moves..max_moves already played."""
-    from mcts import FastBoard
-    while True:
-        fb = FastBoard()
-        n  = random.randint(min_moves, max_moves)
-        for _ in range(n):
-            valid = fb.valid_moves()
-            if not valid:
-                break
-            col = random.choice(valid)
-            r   = fb.make_move(col)
-            if fb.check_win(fb.last_player()):
-                fb = FastBoard()   # position already terminal — start over
-                break
-        else:
-            return fb   # successfully built a non-terminal position
-
-
-def _fastboard_to_board(fb: "FastBoard") -> Board:
-    """Convert a FastBoard back to a tensor Board for agent inference."""
-    from mcts import ROWS, COLS
-    board = Board()
-    for r in range(ROWS):
-        for c in range(COLS):
-            val = fb.cells[r * COLS + c]
-            if val == 1:
-                board.player1_bits[r, c] = 1.0
-            elif val == 2:
-                board.player2_bits[r, c] = 1.0
-    board.turn = fb.turn
-    return board
-
-
-def run_eval(agent: DQNAgent, opponent: MCTSOpponent) -> tuple[int, int, int]:
-    """
-    EVAL_GAMES greedy games (ε=0) from random mid-game positions.
-    Alternates sides each game. No buffer pushes, no learning.
-    Returns (wins, draws, losses).
-
-    Board state is kept as FastBoard throughout; only converted to tensor
-    once per agent move (for inference). The opponent never touches tensors.
-    """
-    wins = draws = losses = 0
-
-    for i in range(EVAL_GAMES):
-        fb           = _random_start_fastboard(*EVAL_START_MOVES)
-        agent_is_p1  = (i % 2 == 0)
-        agent_player = 1 if agent_is_p1 else 2
-
-        while True:
-            valid = fb.valid_moves()
-            if not valid:
-                winner = 0
-                break
-
-            current = (fb.turn % 2) + 1
-
-            if current == agent_player:
-                # One tensor conversion per agent move — unavoidable for inference
-                board  = _fastboard_to_board(fb)
-                action = agent.policy_net.best_move(board)
-            else:
-                # Opponent works entirely on FastBoard — no tensor ops
-                action = opponent.select_action_fast(fb)
-
-            r = fb.make_move(action)
-            if r < 0:
-                winner = 3 - agent_player
-                break
-
-            last = fb.last_player()
-            if fb.check_win(last):
-                winner = last
-                break
-            if fb.is_full():
-                winner = 0
-                break
-
-        if winner == agent_player:
-            wins += 1
-        elif winner == 0:
-            draws += 1
-        else:
-            losses += 1
-
-    return wins, draws, losses
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -229,9 +130,9 @@ def save_checkpoint(agent: DQNAgent, episode: int, stage: int) -> str:
 # ---------------------------------------------------------------------------
 
 def run_training() -> None:
+    win_threshold = int(PROMOTE_THRESHOLD * WINDOW)   # 150
     print(f"Curriculum DQN — {NUM_EPISODES} episodes | MCTS depth 0→{MAX_MCTS_DEPTH}")
-    print(f"Promotion: every {EVAL_INTERVAL} eps, {EVAL_WIN_THRESHOLD}/{EVAL_GAMES} wins "
-          f"(greedy, ε=0, from {EVAL_START_MOVES[0]}–{EVAL_START_MOVES[1]}-move random starts)\n")
+    print(f"Promotion: {win_threshold}/{WINDOW} wins in rolling window (ε-inclusive)\n")
 
     agent = DQNAgent(
         lr=LR, gamma=GAMMA, batch_size=BATCH_SIZE,
@@ -247,7 +148,7 @@ def run_training() -> None:
     stage    = 0
     opponent = MCTSOpponent(depth=stage, n_simulations=MCTS_SIMS)
 
-    w_wins = w_losses = w_draws = 0   # per-window counters, reset every REPORT_INTERVAL
+    w_wins = w_losses = w_draws = 0
     game_lengths = []
     t0 = time.perf_counter()
 
@@ -256,54 +157,44 @@ def run_training() -> None:
         winner, length = play_episode(agent, opponent, agent_is_p1)
         game_lengths.append(length)
 
-        ap = 1 if agent_is_p1 else 2
+        ap = (1 if agent_is_p1 else 2)
         if winner == ap:   w_wins   += 1
         elif winner == 0:  w_draws  += 1
         else:              w_losses += 1
 
-        # Training report — last REPORT_INTERVAL games only
-        if ep % REPORT_INTERVAL == 0:
+        if ep % WINDOW == 0:
             total   = w_wins + w_losses + w_draws or 1
-            avg_len = statistics.mean(game_lengths[-REPORT_INTERVAL:])
-            print(
-                f"Ep {ep:>6} | Stage {ANSI.CYAN}{stage}{ANSI.RESET} | "
-                f"W {ANSI.GREEN}{w_wins:>3}{ANSI.RESET} "
-                f"L {ANSI.RED}{w_losses:>3}{ANSI.RESET} "
-                f"D {ANSI.CYAN}{w_draws:>2}{ANSI.RESET} "
-                f"/{REPORT_INTERVAL} "
-                f"({ANSI.YELLOW}{w_wins/total:.1%} ε-train{ANSI.RESET}) | "
-                f"AvgLen {avg_len:>4.1f} | "
-                f"ε {ANSI.MAGENTA}{agent.epsilon:.3f}{ANSI.RESET} | "
-                f"{time.perf_counter()-t0:>6.1f}s"
-            )
-            w_wins = w_losses = w_draws = 0   # reset for next window
+            avg_len = statistics.mean(game_lengths[-WINDOW:])
+            wr      = w_wins / total
+            promote = (wr >= PROMOTE_THRESHOLD) and (stage < MAX_MCTS_DEPTH)
 
-        # Promotion eval
-        if ep % EVAL_INTERVAL == 0 and stage < MAX_MCTS_DEPTH:
-            ew, ed, el = run_eval(agent, opponent)
-            promoted   = ew >= EVAL_WIN_THRESHOLD
-            tag = f"{ANSI.GREEN}✓ PROMOTE{ANSI.RESET}" if promoted else f"{ANSI.RED}not yet{ANSI.RESET}"
-            print(
-                f"  EVAL | Stage {ANSI.CYAN}{stage}{ANSI.RESET} | "
-                f"W {ANSI.GREEN}{ew}{ANSI.RESET} "
-                f"D {ANSI.CYAN}{ed}{ANSI.RESET} "
-                f"L {ANSI.RED}{el}{ANSI.RESET} "
-                f"({ew}/{EVAL_GAMES} greedy, need {EVAL_WIN_THRESHOLD}) → {tag}"
-            )
-            if promoted:
+            promo_str = ""
+            if promote:
                 save_checkpoint(agent, ep, stage)
                 stage   += 1
                 opponent = MCTSOpponent(depth=stage, n_simulations=MCTS_SIMS)
-                w_wins = w_losses = w_draws = 0
-                game_lengths.clear()
-                print(f"  → Stage {stage} (MCTS depth {stage})\n")
+                promo_str = f" {ANSI.GREEN}→ PROMOTED Stage {stage}{ANSI.RESET}"
 
-        # Periodic checkpoint
+            print(
+                f"Ep {ep:>6} | Stage {ANSI.CYAN}{stage - (1 if promote else 0)}{ANSI.RESET} | "
+                f"W {ANSI.GREEN}{w_wins}{ANSI.RESET} "
+                f"L {ANSI.RED}{w_losses}{ANSI.RESET} "
+                f"D {ANSI.CYAN}{w_draws}{ANSI.RESET} "
+                f"/{WINDOW} "
+                f"({ANSI.GREEN if wr >= PROMOTE_THRESHOLD else ANSI.YELLOW}{wr:.1%}{ANSI.RESET}) | "
+                f"AvgLen {avg_len:>4.1f} | "
+                f"ε {ANSI.MAGENTA}{agent.epsilon:.3f}{ANSI.RESET} | "
+                f"{time.perf_counter()-t0:>6.1f}s"
+                f"{promo_str}"
+            )
+
+            w_wins = w_losses = w_draws = 0
+
         if ep % SAVE_INTERVAL == 0:
             print(f"  → Checkpoint: {save_checkpoint(agent, ep, stage)}")
 
     agent.save(os.path.join(SAVE_DIR, f"{RUN_NAME}_final.pth"))
-    print(f"\nDone. Total time: {time.perf_counter()-t0:.1f}s")
+    print(f"\nDone. {time.perf_counter()-t0:.1f}s")
 
 
 if __name__ == "__main__":
