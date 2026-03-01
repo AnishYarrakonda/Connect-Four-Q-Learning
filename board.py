@@ -4,6 +4,8 @@ from typing import Optional
 
 # use gpu for faster operations
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+ROWS = 6
+COLS = 7
 
 # board object
 class Board:
@@ -18,8 +20,8 @@ class Board:
     # create board
     def __init__(self: "Board") -> None:
         # stores bit boards for each player
-        self.player1_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
-        self.player2_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
+        self.player1_bits = torch.zeros((ROWS, COLS), dtype=torch.float32, device=device)
+        self.player2_bits = torch.zeros((ROWS, COLS), dtype=torch.float32, device=device)
 
         # tracks the current game turn (0 for player 1, 1 for player 2)
         self.turn = 0
@@ -37,7 +39,7 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(y - 3, 0)
-        end = min(y + 4, 7)
+        end = min(y + 4, COLS)
 
         row_slice = bits[x, start:end]
 
@@ -53,7 +55,7 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(x - 3, 0)
-        end = min(x + 4, 6)
+        end = min(x + 4, ROWS)
 
         col_slice = bits[start:end, y]
 
@@ -74,7 +76,7 @@ class Board:
             j -= 1
 
         diag_slice = []
-        while i < 6 and j < 7:
+        while i < ROWS and j < COLS:
             diag_slice.append(bits[i, j])
             i += 1
             j += 1
@@ -93,12 +95,12 @@ class Board:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         i, j = x, y
-        while i < 5 and j > 0:
+        while i < ROWS - 1 and j > 0:
             i += 1
             j -= 1
 
         diag_slice = []
-        while i >= 0 and j < 7:
+        while i >= 0 and j < COLS:
             diag_slice.append(bits[i, j])
             i -= 1
             j += 1
@@ -122,17 +124,25 @@ class Board:
 
     # checks if the board is full
     def is_full(self: "Board") -> bool:
-        return self.turn >= 42
+        return self.turn >= ROWS * COLS
+
+    # checks if a column is full
+    def is_column_full(self: "Board", col: int) -> bool:
+        taken = self.player1_bits[:, col] + self.player2_bits[:, col]
+        return bool(taken.all().item())
 
 
     # drops a coin in the given column
     def make_move(self: "Board", col: int) -> Optional[int]:
+        if col < 0 or col >= COLS:
+            return None
+
         taken = self.player1_bits[:, col] + self.player2_bits[:, col]
 
         if taken.all():
             return None  # Column full
 
-        for i in range(6):
+        for i in range(ROWS):
             if not taken[i]:
                 if self.turn % 2 == 0:
                     self.player1_bits[i, col] = 1
@@ -144,16 +154,24 @@ class Board:
 
         return None
     
+
+    # get all valid moves
+    def valid_moves(self: "Board") -> list[int]:
+        return [col for col in range(COLS) if not self.is_column_full(col)]
     
     # returns if the game is done and the winner
-    def game_over(self: "Board", row, col) -> tuple[bool, int]:
-        if self.is_full():
-            return True, 0  # Draw
+    def game_over(self: "Board", row: Optional[int], col: int) -> tuple[bool, int]:
+        # Defensive guard: invalid move should not crash caller.
+        if row is None:
+            return False, 0
 
         # Check if the last move resulted in a win
         if self.full_check(row, col):
             winner = 2 if self.turn % 2 == 0 else 1
             return True, winner
+
+        if self.is_full():
+            return True, 0  # Draw
 
         return False, 0
 
@@ -161,8 +179,8 @@ class Board:
     # prints the board state
     def __str__(self: "Board") -> str:
         board_str = ""
-        for i in range(5, -1, -1):
-            for j in range(7):
+        for i in range(ROWS - 1, -1, -1):
+            for j in range(COLS):
                 if self.player1_bits[i, j] == 1:
                     board_str += "X "
                 elif self.player2_bits[i, j] == 1:

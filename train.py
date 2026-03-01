@@ -5,20 +5,36 @@ from board import Board
 from agent import Agent
 
 # simulate a single game
-def play_game(agent: Agent, train=True):
+def play_game(agent: Agent, train: bool = True) -> int:
     board = Board()     # make the board
     done = False        # track if game is done
     winner = 0          # store the winner
 
     while not done:
+        valid_moves = board.valid_moves()
+        if not valid_moves:
+            winner = 0
+            break
+
+        acting_player = 1 if board.turn % 2 == 0 else 2
+
         # get the state of the game for the agent to make actions
         state = Board.board_to_tensor(board=board)
 
-        # choose an action
-        action = agent.select_action(board=board)
+        # choose an action from valid moves only
+        action = agent.select_action(board=board, valid_moves=valid_moves)
 
         # make the move
         row = board.make_move(action)
+        if row is None:
+            # Defensive guard against any future policy bug:
+            # end game with a loss signal instead of crashing.
+            done = True
+            winner = 2
+            if train:
+                next_state = Board.board_to_tensor(board=board)
+                agent.train_step(state, action, -1.0, next_state, done)
+            break
 
         # check if game is over (win/draw)
         done, winner = board.game_over(row, action)
@@ -28,12 +44,12 @@ def play_game(agent: Agent, train=True):
         time.sleep(0.1)  # small delay for visualization
 
         if train:
-            # get reward (1 for win, -1 for loss, 0 for draw/neither)
-            reward = 0
-            if winner == 1:
-                reward = 1
-            elif winner == -1:
-                reward = -1
+            # reward from the acting player's perspective
+            reward = 0.0
+            if done and winner == acting_player:
+                reward = 1.0
+            elif done and winner != 0:
+                reward = -1.0
 
             # get the next state for training
             next_state = Board.board_to_tensor(board=board)
@@ -67,7 +83,7 @@ if __name__ == "__main__":
         # update stats
         if winner == 1:
             stats['wins'] += 1
-        elif winner == -1:
+        elif winner == 2:
             stats['losses'] += 1
         else:
             stats['draws'] += 1
