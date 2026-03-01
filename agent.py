@@ -52,7 +52,7 @@ class Agent:
         # exploitation
         state = Board.board_to_tensor(board)
         q_values = self.model(state).detach().flatten()
-        return torch.argmax(q_values).item()
+        return torch.argmax(q_values).item() # type: ignore
 
 
     # train on a single step using TD update
