@@ -28,8 +28,6 @@ class Config(TypedDict):
     save_interval: int
     run_name: str
     save_dir: str
-    save_final: bool
-    final_model_path: str
     resume_training: bool
     resume_model_path: str
 
@@ -51,8 +49,6 @@ DEFAULT_CONFIG: Config = {
     "save_interval": 500,
     "run_name": "agent",
     "save_dir": "models",
-    "save_final": True,
-    "final_model_path": "models/agent_final.pt",
     "resume_training": False,
     "resume_model_path": "",
 }
@@ -194,9 +190,6 @@ def configure_saving(config: Config) -> None:
     config["save_interval"] = ask_int("Save checkpoint every N episodes", config["save_interval"], minimum=1)
     config["run_name"] = ask_text("Run/model name (used in checkpoint filenames)", config["run_name"])
     config["save_dir"] = ask_text("Directory for checkpoints and model files", config["save_dir"])
-    config["save_final"] = ask_yes_no("Save final model when training ends?", config["save_final"])
-    default_final = f"{config['save_dir']}/{config['run_name']}_final.pt"
-    config["final_model_path"] = ask_text("Final model path", default_final)
 
 
 def build_runtime_config() -> Config:
@@ -213,10 +206,6 @@ def build_runtime_config() -> Config:
     if config["resume_training"] and config["resume_model_path"] and config["run_name"] == DEFAULT_CONFIG["run_name"]:
         base_name = os.path.splitext(os.path.basename(config["resume_model_path"]))[0]
         config["run_name"] = f"{base_name}_continued"
-
-    # Keep final model path aligned when untouched.
-    if config["final_model_path"] == DEFAULT_CONFIG["final_model_path"]:
-        config["final_model_path"] = f"{config['save_dir']}/{config['run_name']}_final.pt"
 
     return config
 
@@ -438,7 +427,7 @@ def build_training_plots(
     ax4.grid(alpha=0.25)
     ax4.legend()
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96]) # type: ignore
     plt.show()
 
 
@@ -558,13 +547,6 @@ def run_training(config: Config) -> None:
         epsilons=epsilons,
         run_name=config["run_name"],
     )
-
-    if config["save_final"]:
-        final_dir = os.path.dirname(config["final_model_path"])
-        if final_dir:
-            os.makedirs(final_dir, exist_ok=True)
-        torch.save(agent.model.state_dict(), config["final_model_path"])
-        print(f"Final model saved: {config['final_model_path']}")
 
 
 if __name__ == "__main__":
