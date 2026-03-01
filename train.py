@@ -61,7 +61,7 @@ def play_game(agent: Agent, train: bool = True, watch_steps: int = 1) -> int:
     return winner
 
 
-# train a connect four model
+# Train a Connect Four Model:
 if __name__ == "__main__":
     # create a new agent to train
     agent_1: Agent = Agent(
@@ -74,11 +74,18 @@ if __name__ == "__main__":
     )
 
     # training parameters
-    num_episodes = 1000           # number of games to train
-    stats = {'wins':0, 'losses':0, 'draws':0}
+    num_episodes = 1000
+
+    # store cumulative stats
+    stats = {
+           'wins'   :   0,
+           'losses' :   0,
+           'draws'  :   0
+        }
 
     # training loop
     for episode in range(num_episodes):
+        # play the game
         winner = play_game(agent_1, train=True, watch_steps=100)
 
         # update stats
@@ -99,7 +106,8 @@ if __name__ == "__main__":
 
         # optional: save model every 500 episodes
         if (episode + 1) % 500 == 0:
-            torch.save(agent_1.model.state_dict(), f"agent_checkpoint_{episode+1}.pt")
+            path = f"models/agent_checkpoint_{episode+1}.pt"
+            torch.save(agent_1.model.state_dict(), path)
             print(f"Saved model checkpoint at episode {episode + 1}")
 
     print("Training complete!")
