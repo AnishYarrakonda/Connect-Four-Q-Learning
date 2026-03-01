@@ -4,7 +4,10 @@ from typing import Optional
 
 # board ops stay on CPU; NN input gets moved to accelerator in board_to_tensor
 _cpu = torch.device("cpu")
-device = torch.device("cpu")  # MPS slower than CPU for batch=64; no transfer overhead
+# MPS (Apple Silicon GPU) is SLOWER than CPU for our workload:
+# batch size 64 is too small — the transfer overhead dominates compute.
+# Forcing CPU gives consistent ~3s/250 games with no memory pressure spikes.
+device = torch.device("cpu")
 
 # board object
 class Board:
@@ -15,15 +18,14 @@ class Board:
     @staticmethod
     def board_to_tensor_cpu(board: "Board") -> torch.Tensor:
         # Always encode from current player's perspective:
-        # channel 0 = side to move, channel 1 = opponent, channel 2 = empty cells
+        # channel 0 = side to move, channel 1 = opponent.
         if board.turn % 2 == 0:
-            current_bits  = board.player1_bits
+            current_bits = board.player1_bits
             opponent_bits = board.player2_bits
         else:
-            current_bits  = board.player2_bits
+            current_bits = board.player2_bits
             opponent_bits = board.player1_bits
-        empty_bits = 1.0 - (current_bits + opponent_bits)
-        return torch.stack([current_bits, opponent_bits, empty_bits]).flatten().unsqueeze(0)
+        return torch.stack([current_bits, opponent_bits]).flatten().unsqueeze(0)
         # NOTE: stays on CPU — ReplayBuffer.sample() moves the whole batch at once
 
     # convert board state to tensor on accelerator device (for inference only)
