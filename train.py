@@ -1,8 +1,10 @@
 # imports
 import os
 import time
+import statistics
 from typing import TypedDict
 
+import matplotlib.pyplot as plt
 import torch
 
 from agent import Agent
@@ -253,6 +255,8 @@ def format_progress_line(
     p1_wins: int,
     p2_wins: int,
     draws: int,
+    avg_len: float,
+    median_len: float,
     epsilon: float,
     train_enabled: bool,
     checkpoint_note: str = "",
@@ -267,6 +271,8 @@ def format_progress_line(
         centered("P1 Wins", str(p1_wins), 14, f"{ANSI.RED}{p1_wins}{ANSI.RESET}"),
         centered("P2 Wins", str(p2_wins), 14, f"{ANSI.YELLOW}{p2_wins}{ANSI.RESET}"),
         centered("Draws", str(draws), 11, f"{ANSI.CYAN}{draws}{ANSI.RESET}"),
+        centered("Avg Len", f"{avg_len:.2f}", 14, f"{ANSI.CYAN}{avg_len:.2f}{ANSI.RESET}"),
+        centered("Med Len", f"{median_len:.2f}", 14, f"{ANSI.CYAN}{median_len:.2f}{ANSI.RESET}"),
         centered("Epsilon", f"{epsilon:.4f}", 16, f"{ANSI.MAGENTA}{epsilon:.4f}{ANSI.RESET}"),
         centered(
             "Train",
@@ -286,7 +292,7 @@ def play_game(
     watch_game: bool = False,
     watch_steps: int = 1,
     watch_delay: float = 0.2,
-) -> int:
+) -> tuple[int, int]:
     board = Board()
     done = False
     winner = 0
@@ -326,7 +332,114 @@ def play_game(
             next_state = Board.board_to_tensor(board=board)
             agent.train_step(state, action, reward, next_state, done)
 
-    return winner
+    return winner, board.turn
+
+
+def moving_average(values: list[float], window: int) -> list[float]:
+    if not values:
+        return []
+    out: list[float] = []
+    running = 0.0
+    for i, val in enumerate(values):
+        running += val
+        if i >= window:
+            running -= values[i - window]
+        denom = min(i + 1, window)
+        out.append(running / denom)
+    return out
+
+
+def build_training_plots(
+    episodes: list[int],
+    winners: list[int],
+    game_lengths: list[int],
+    epsilons: list[float],
+    run_name: str,
+) -> None:
+    if not episodes:
+        return
+
+    window = max(10, len(episodes) // 20)
+
+    p1_binary = [1.0 if w == 1 else 0.0 for w in winners]
+    p2_binary = [1.0 if w == 2 else 0.0 for w in winners]
+    draw_binary = [1.0 if w == 0 else 0.0 for w in winners]
+    decisive_binary = [1.0 if w != 0 else 0.0 for w in winners]
+
+    p1_roll = moving_average(p1_binary, window)
+    p2_roll = moving_average(p2_binary, window)
+    draw_roll = moving_average(draw_binary, window)
+    decisive_roll = moving_average(decisive_binary, window)
+
+    p1_edge = [p1_roll[i] - p2_roll[i] for i in range(len(p1_roll))]
+    avg_len = moving_average([float(x) for x in game_lengths], window)
+    med_len: list[float] = []
+    for i in range(len(game_lengths)):
+        start = max(0, i - window + 1)
+        med_len.append(float(statistics.median(game_lengths[start : i + 1])))
+
+    cum_p1: list[int] = []
+    cum_p2: list[int] = []
+    cum_draw: list[int] = []
+    p1_sum = 0
+    p2_sum = 0
+    d_sum = 0
+    for w in winners:
+        if w == 1:
+            p1_sum += 1
+        elif w == 2:
+            p2_sum += 1
+        else:
+            d_sum += 1
+        cum_p1.append(p1_sum)
+        cum_p2.append(p2_sum)
+        cum_draw.append(d_sum)
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle(f"Training Dashboard - {run_name}", fontsize=14, fontweight="bold")
+
+    ax1 = axes[0, 0]
+    ax1.plot(episodes, cum_p1, color="red", label="Player 1 Wins")
+    ax1.plot(episodes, cum_p2, color="goldenrod", label="Player 2 Wins")
+    ax1.plot(episodes, cum_draw, color="steelblue", label="Draws")
+    ax1.set_title("Cumulative Outcomes")
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Count")
+    ax1.grid(alpha=0.25)
+    ax1.legend()
+
+    ax2 = axes[0, 1]
+    ax2.plot(episodes, avg_len, color="purple", label=f"Avg Length ({window}-ep)")
+    ax2.plot(episodes, med_len, color="teal", label=f"Median Length ({window}-ep)")
+    ax2.set_title("Game Length Trends")
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Moves per Game")
+    ax2.grid(alpha=0.25)
+    ax2.legend()
+
+    ax3 = axes[1, 0]
+    ax3.plot(episodes, p1_roll, color="red", label="P1 Win Rate")
+    ax3.plot(episodes, p2_roll, color="goldenrod", label="P2 Win Rate")
+    ax3.plot(episodes, draw_roll, color="steelblue", label="Draw Rate")
+    ax3.plot(episodes, decisive_roll, color="green", linestyle="--", label="Decisive Rate")
+    ax3.set_title(f"Rolling Outcome Rates ({window}-episode window)")
+    ax3.set_xlabel("Episode")
+    ax3.set_ylabel("Rate")
+    ax3.set_ylim(-0.02, 1.02)
+    ax3.grid(alpha=0.25)
+    ax3.legend()
+
+    ax4 = axes[1, 1]
+    ax4.plot(episodes, epsilons, color="magenta", label="Epsilon")
+    ax4.plot(episodes, p1_edge, color="black", linestyle="--", label="P1 Edge (P1 rate - P2 rate)")
+    ax4.set_title("Exploration + First-Player Advantage")
+    ax4.set_xlabel("Episode")
+    ax4.set_ylabel("Value")
+    ax4.grid(alpha=0.25)
+    ax4.legend()
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    plt.show()
 
 
 def checkpoint_path(config: Config, episode: int) -> str:
@@ -374,15 +487,23 @@ def run_training(config: Config) -> None:
     p1_wins = 0
     p2_wins = 0
     draws = 0
+    winners: list[int] = []
+    game_lengths: list[int] = []
+    episodes: list[int] = []
+    epsilons: list[float] = []
 
     for episode in range(1, config["num_episodes"] + 1):
-        winner = play_game(
+        winner, game_length = play_game(
             agent=agent,
             train=config["train"],
             watch_game=config["watch_game"],
             watch_steps=config["watch_steps"],
             watch_delay=config["watch_delay"],
         )
+        winners.append(winner)
+        game_lengths.append(game_length)
+        episodes.append(episode)
+        epsilons.append(agent.epsilon)
 
         if winner == 1:
             p1_wins += 1
@@ -396,6 +517,9 @@ def run_training(config: Config) -> None:
             saved_path = save_checkpoint(agent, config, episode)
             checkpoint_note = f"Checkpoint {saved_path}"
 
+        avg_len = sum(game_lengths) / len(game_lengths)
+        median_len = float(statistics.median(game_lengths))
+
         if episode % config["progress_interval"] == 0 or checkpoint_note:
             print(
                 format_progress_line(
@@ -404,6 +528,8 @@ def run_training(config: Config) -> None:
                     p1_wins=p1_wins,
                     p2_wins=p2_wins,
                     draws=draws,
+                    avg_len=avg_len,
+                    median_len=median_len,
                     epsilon=agent.epsilon,
                     train_enabled=config["train"],
                     checkpoint_note=checkpoint_note,
@@ -418,11 +544,20 @@ def run_training(config: Config) -> None:
             p1_wins=p1_wins,
             p2_wins=p2_wins,
             draws=draws,
+            avg_len=(sum(game_lengths) / len(game_lengths)) if game_lengths else 0.0,
+            median_len=float(statistics.median(game_lengths)) if game_lengths else 0.0,
             epsilon=agent.epsilon,
             train_enabled=config["train"],
         )
     )
     print("Training complete.")
+    build_training_plots(
+        episodes=episodes,
+        winners=winners,
+        game_lengths=game_lengths,
+        epsilons=epsilons,
+        run_name=config["run_name"],
+    )
 
     if config["save_final"]:
         final_dir = os.path.dirname(config["final_model_path"])
