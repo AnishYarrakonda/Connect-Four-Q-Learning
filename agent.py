@@ -66,7 +66,6 @@ class Agent:
     BATCH_SIZE = 256
     MIN_BUFFER = 1000
     TARGET_UPDATE_FREQ = 500
-    LARGE_NEG = -1e9
 
     def __init__(
         self: "Agent",
@@ -82,7 +81,7 @@ class Agent:
         self.target_model.load_state_dict(self.model.state_dict())
         self.target_model.eval()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
-        self.loss_fn = nn.SmoothL1Loss()
+        self.loss_fn = nn.MSELoss()
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
@@ -128,33 +127,13 @@ class Agent:
         next_state_batch = torch.stack(list(next_states)).to(self.device)
         done_batch = torch.tensor(dones, dtype=torch.float32, device=self.device)
 
-        # Horizontal-mirror augmentation improves sample efficiency and discourages
-        # overfitting to narrow opening patterns.
-        state_spatial = state_batch.view(-1, 2, Board.ROWS, Board.COLS)
-        next_state_spatial = next_state_batch.view(-1, 2, Board.ROWS, Board.COLS)
-        mirrored_state_batch = torch.flip(state_spatial, dims=[3]).flatten(1)
-        mirrored_next_state_batch = torch.flip(next_state_spatial, dims=[3]).flatten(1)
-        mirrored_action_batch = (Board.COLS - 1) - action_batch
-
-        state_batch = torch.cat([state_batch, mirrored_state_batch], dim=0)
-        next_state_batch = torch.cat([next_state_batch, mirrored_next_state_batch], dim=0)
-        action_batch = torch.cat([action_batch, mirrored_action_batch], dim=0)
-        reward_batch = torch.cat([reward_batch, reward_batch], dim=0)
-        done_batch = torch.cat([done_batch, done_batch], dim=0)
-
         self.model.train()
         q_values = self.model(state_batch)
         q_selected = q_values.gather(1, action_batch.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
             next_q_values = self.target_model(next_state_batch)
-            next_occupied = next_state_batch.view(-1, 2, Board.ROWS, Board.COLS).sum(dim=1)
-            next_valid_mask = next_occupied.sum(dim=1) < float(Board.ROWS)
-            masked_next_q = next_q_values.masked_fill(~next_valid_mask, self.LARGE_NEG)
-            max_next_q = masked_next_q.max(dim=1).values
-
-            # Self-play is alternating-turn zero-sum:
-            # next_state is from opponent perspective, so bootstrap term is subtracted.
-            target_values = reward_batch - (1.0 - done_batch) * self.gamma * max_next_q
+            max_next_q = next_q_values.max(dim=1).values
+            target_values = reward_batch + (1.0 - done_batch) * self.gamma * max_next_q
 
         loss = self.loss_fn(q_selected, target_values)
         self.optimizer.zero_grad()
