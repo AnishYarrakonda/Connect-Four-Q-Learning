@@ -41,8 +41,8 @@ PROMOTE_WIN_RATE    = 0.60        # greedy win-rate needed to advance
 
 # Evaluation — low-temperature sampling, no learning, no epsilon
 EVAL_INTERVAL       = 500         # run an eval every N training episodes
-EVAL_GAMES          = 300         # games per eval — half as P1, half as P2
-                                  # need round(0.60 * 300) = 180 wins to promote
+EVAL_GAMES          = 250         # games per eval — half as P1, half as P2
+                                  # need round(0.60 * 250) = 150 wins to promote
 EVAL_TEMPERATURE    = 0.2         # agent uses temperature sampling during eval
                                   # low enough to be near-greedy, high enough that
                                   # games aren't identical clones of each other
@@ -286,7 +286,7 @@ def save_checkpoint(agent: DQNAgent, episode: int, stage: int) -> str:
 # ---------------------------------------------------------------------------
 
 def run_training() -> None:
-    promote_threshold = round(PROMOTE_WIN_RATE * EVAL_GAMES)  # 180 — use round() not int() to avoid truncation drift
+    promote_threshold = round(PROMOTE_WIN_RATE * EVAL_GAMES)  # 150 — use round() not int() to avoid truncation drift
     print(f"Starting curriculum DQN training — {NUM_EPISODES} episodes")
     print(f"MCTS ladder: depth 0 → {MAX_MCTS_DEPTH}")
     print(f"Promotion: greedy eval every {EVAL_INTERVAL} episodes, "
