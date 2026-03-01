@@ -46,7 +46,7 @@ DEFAULT_CONFIG: Config = {
     "watch_delay": 0.1,
     "win_reward": 0.5,
     "loss_reward": -2.0,
-    "random_start_mode": False,
+    "random_start_mode": True,
     "run_name": "agent",
     "save_dir": "models",
     "save_interval": 1000,
