@@ -84,7 +84,7 @@ class Agent:
             if col not in valid_moves:
                 masked_q[col] = -float("inf")
 
-        return torch.argmax(masked_q).item()
+        return torch.argmax(masked_q).item() # type: ignore
 
     # train on a single step using TD update
     def train_step(
