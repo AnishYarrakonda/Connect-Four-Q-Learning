@@ -31,20 +31,20 @@ SAVE_DIR        = "models"
 RUN_NAME        = "cf_dqn"
 NUM_EPISODES    = 50_000
 SAVE_INTERVAL   = 2_000
-REPORT_INTERVAL = 200
+REPORT_INTERVAL = 250
 
 # Curriculum
 MAX_MCTS_DEPTH  = 6
 MCTS_SIMS       = 20          # rollouts per move — reduced from 40, still strong
 
-# Promotion  — every 500 games, 100 greedy games from random positions, need 67 wins
-EVAL_INTERVAL       = 500
-EVAL_GAMES          = 100
-EVAL_WIN_THRESHOLD  = 67      # 67/100 = 67%
+# Promotion  — every 1000 games, 200 greedy games from random positions, need 140 wins
+EVAL_INTERVAL       = 1000
+EVAL_GAMES          = 200
+EVAL_WIN_THRESHOLD  = 140     # 140/200 = 70%
 EVAL_START_MOVES    = (4, 20) # random starting position: 4 to 20 random moves pre-played
 
 # DQN hyper-params
-LR              = 1e-3
+LR              = 2e-3
 GAMMA           = 0.99
 BATCH_SIZE      = 64
 BUFFER_CAPACITY = 60_000
