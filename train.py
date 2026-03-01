@@ -100,7 +100,8 @@ def play_episode(
             winner = 0
             break
 
-        state = Board.board_to_tensor(board)
+        # CPU tensor for buffer storage — moved to device in batch by ReplayBuffer.sample()
+        state = Board.board_to_tensor_cpu(board)
 
         if current_player == agent_player:
             action = agent.select_action(board)
@@ -126,7 +127,7 @@ def play_episode(
             else:
                 reward = 0.0
 
-            next_state = Board.board_to_tensor(board)
+            next_state = Board.board_to_tensor_cpu(board)
             trajectory.append((state, action, reward, next_state, done))
 
         if done:

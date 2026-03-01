@@ -11,9 +11,9 @@ class Board:
     ROWS = 6
     COLS = 7
 
-    # convert board state to tensor for neural network input
+    # convert board state to tensor — stays on CPU (for replay buffer storage)
     @staticmethod
-    def board_to_tensor(board: "Board") -> torch.Tensor:
+    def board_to_tensor_cpu(board: "Board") -> torch.Tensor:
         # Always encode from current player's perspective:
         # channel 0 = side to move, channel 1 = opponent.
         if board.turn % 2 == 0:
@@ -22,8 +22,13 @@ class Board:
         else:
             current_bits = board.player2_bits
             opponent_bits = board.player1_bits
-        state = torch.stack([current_bits, opponent_bits]).flatten().unsqueeze(0)
-        return state.to(device)
+        return torch.stack([current_bits, opponent_bits]).flatten().unsqueeze(0)
+        # NOTE: stays on CPU — ReplayBuffer.sample() moves the whole batch at once
+
+    # convert board state to tensor on accelerator device (for inference only)
+    @staticmethod
+    def board_to_tensor(board: "Board") -> torch.Tensor:
+        return Board.board_to_tensor_cpu(board).to(device)
 
     # create board
     def __init__(self: "Board") -> None:
