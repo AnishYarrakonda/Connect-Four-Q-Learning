@@ -132,7 +132,12 @@ class MCTSOpponent:
     # ------------------------------------------------------------------
 
     def select_action(self, board: Board) -> int:
-        fb    = FastBoard.from_board(board)
+        fb = FastBoard.from_board(board)
+        return self.select_action_fast(fb)
+
+    def select_action_fast(self, fb: "FastBoard") -> int:
+        """Same logic as select_action but accepts a FastBoard directly.
+        Used during eval to avoid repeated tensor→FastBoard conversions."""
         valid = fb.valid_moves()
         if not valid:
             return 0
@@ -140,20 +145,17 @@ class MCTSOpponent:
         if self.depth == 0:
             return random.choice(valid)
 
-        acting = (fb.turn % 2) + 1       # player about to move
+        acting = (fb.turn % 2) + 1
         opp    = 3 - acting
 
-        # Immediate win
         for col in valid:
             if self._wins_immediately(fb, col, acting):
                 return col
 
-        # Must-block opponent win
         for col in valid:
             if self._wins_immediately(fb, col, opp):
                 return col
 
-        # Score by rollout
         scores = [0.0] * COLS
         for col in valid:
             for _ in range(self.n_simulations):
