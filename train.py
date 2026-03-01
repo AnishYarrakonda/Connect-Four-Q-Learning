@@ -37,7 +37,7 @@ class Config(TypedDict):
 
 
 DEFAULT_CONFIG: Config = {
-    "lr": 0.0003,
+    "lr": 0.01,
     "epsilon": 1.0,
     "epsilon_decay": 0.997,
     "epsilon_min": 0.05,
