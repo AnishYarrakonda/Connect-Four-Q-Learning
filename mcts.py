@@ -1,111 +1,197 @@
 """
-mcts.py — lightweight Monte Carlo opponent for curriculum training.
+mcts.py — fast Monte Carlo opponent for curriculum training.
 
-depth=0  → pure random (baseline)
-depth=N  → N-ply random rollout to estimate move quality
-n_simulations → number of rollouts per candidate move
+The key optimisation: all simulation uses a pure-Python FastBoard (flat int
+list, no PyTorch) so cloning and move-making inside rollouts costs nothing.
+The public interface still accepts the tensor-based Board from board.py.
+
+depth=0  → pure random (no simulation)
+depth=N  → N-ply random rollouts to score each candidate move
 """
 
 import random
 from board import Board
 
+ROWS = 6
+COLS = 7
+
+# Precompute all winning lines as flat index tuples once at import time.
+# Each entry is a tuple of 4 board indices (row*COLS + col).
+def _build_win_lines() -> list[tuple[int, ...]]:
+    lines = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            # horizontal
+            if c + 3 < COLS:
+                lines.append((r*COLS+c, r*COLS+c+1, r*COLS+c+2, r*COLS+c+3))
+            # vertical
+            if r + 3 < ROWS:
+                lines.append((r*COLS+c, (r+1)*COLS+c, (r+2)*COLS+c, (r+3)*COLS+c))
+            # diagonal \
+            if r + 3 < ROWS and c + 3 < COLS:
+                lines.append((r*COLS+c, (r+1)*COLS+c+1, (r+2)*COLS+c+2, (r+3)*COLS+c+3))
+            # diagonal /
+            if r + 3 < ROWS and c - 3 >= 0:
+                lines.append((r*COLS+c, (r+1)*COLS+c-1, (r+2)*COLS+c-2, (r+3)*COLS+c-3))
+    return lines
+
+_WIN_LINES = _build_win_lines()
+
+
+# ---------------------------------------------------------------------------
+# FastBoard — pure Python, no PyTorch, designed for cheap cloning
+# ---------------------------------------------------------------------------
+
+class FastBoard:
+    """
+    Minimal board using a flat int list: 0=empty, 1=P1, 2=P2.
+    column_height[c] tracks the next empty row in column c.
+    No PyTorch anywhere — clone() is just list.copy().
+    """
+    __slots__ = ("cells", "heights", "turn")
+
+    def __init__(self) -> None:
+        self.cells:   list[int] = [0] * (ROWS * COLS)
+        self.heights: list[int] = [0] * COLS
+        self.turn: int = 0          # 0-indexed; player = (turn%2)+1
+
+    # ---- construction from a tensor Board ----
+
+    @staticmethod
+    def from_board(board: Board) -> "FastBoard":
+        fb = FastBoard()
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board.player1_bits[r, c] == 1:
+                    fb.cells[r * COLS + c] = 1
+                elif board.player2_bits[r, c] == 1:
+                    fb.cells[r * COLS + c] = 2
+        # Recompute column heights
+        for c in range(COLS):
+            h = 0
+            for r in range(ROWS):
+                if fb.cells[r * COLS + c] != 0:
+                    h = r + 1
+            fb.heights[c] = h
+        fb.turn = board.turn
+        return fb
+
+    def clone(self) -> "FastBoard":
+        fb = FastBoard()
+        fb.cells   = self.cells.copy()
+        fb.heights = self.heights.copy()
+        fb.turn    = self.turn
+        return fb
+
+    def valid_moves(self) -> list[int]:
+        return [c for c in range(COLS) if self.heights[c] < ROWS]
+
+    def make_move(self, col: int) -> int:
+        """Drop a piece; returns the row placed, or -1 if column full."""
+        r = self.heights[col]
+        if r >= ROWS:
+            return -1
+        player = (self.turn % 2) + 1
+        self.cells[r * COLS + col] = player
+        self.heights[col] += 1
+        self.turn += 1
+        return r
+
+    def last_player(self) -> int:
+        """The player who just moved."""
+        return ((self.turn - 1) % 2) + 1
+
+    def check_win(self, last_player: int) -> bool:
+        c = last_player
+        cells = self.cells
+        for a, b, d, e in _WIN_LINES:
+            if cells[a] == c and cells[b] == c and cells[d] == c and cells[e] == c:
+                return True
+        return False
+
+    def is_full(self) -> bool:
+        return self.turn >= ROWS * COLS
+
+
+# ---------------------------------------------------------------------------
+# MCTSOpponent
+# ---------------------------------------------------------------------------
 
 class MCTSOpponent:
-    def __init__(self, depth: int = 0, n_simulations: int = 40):
+    def __init__(self, depth: int = 0, n_simulations: int = 20):
         """
-        depth        : how many random plies to roll out after the candidate move.
-                       0 = pick uniformly at random (no simulation).
-        n_simulations: rollouts per legal move when depth > 0.
+        depth        : plies to roll out per simulation (0 = pure random pick).
+        n_simulations: rollouts per candidate move when depth > 0.
+                       Default lowered to 20 — plenty of signal, much faster.
         """
-        self.depth = depth
+        self.depth        = depth
         self.n_simulations = n_simulations
 
     # ------------------------------------------------------------------
-    # Public interface
+    # Public interface  (accepts the tensor Board from board.py)
     # ------------------------------------------------------------------
 
     def select_action(self, board: Board) -> int:
-        valid = board.valid_moves()
+        fb    = FastBoard.from_board(board)
+        valid = fb.valid_moves()
         if not valid:
             return 0
 
-        # Depth-0 is pure random — no need to simulate.
         if self.depth == 0:
             return random.choice(valid)
 
-        # First check for immediate wins or must-blocks.
+        acting = (fb.turn % 2) + 1       # player about to move
+        opp    = 3 - acting
+
+        # Immediate win
         for col in valid:
-            if self._is_winning_move(board, col):
+            if self._wins_immediately(fb, col, acting):
                 return col
 
-        opponent_player = 2 if (board.turn % 2 == 0) else 1
+        # Must-block opponent win
         for col in valid:
-            if self._is_winning_move_for(board, col, opponent_player):
+            if self._wins_immediately(fb, col, opp):
                 return col
 
-        # Score remaining moves by simulation.
-        scores = {col: 0.0 for col in valid}
+        # Score by rollout
+        scores = [0.0] * COLS
         for col in valid:
             for _ in range(self.n_simulations):
-                scores[col] += self._simulate(board, col)
+                scores[col] += self._simulate(fb, col, acting)
 
         return max(valid, key=lambda c: scores[c])
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Internal helpers — all work on FastBoard
     # ------------------------------------------------------------------
 
-    def _clone(self, board: Board) -> Board:
-        clone = Board()
-        clone.player1_bits = board.player1_bits.clone()
-        clone.player2_bits = board.player2_bits.clone()
-        clone.turn = board.turn
-        clone.move_history = board.move_history.copy()
-        return clone
-
-    def _is_winning_move(self, board: Board, col: int) -> bool:
-        return self._is_winning_move_for(board, col, 1 if board.turn % 2 == 0 else 2)
-
-    def _is_winning_move_for(self, board: Board, col: int, player_turn_parity: int) -> bool:
-        """Check if playing col RIGHT NOW (given parity) results in a win."""
-        sim = self._clone(board)
-        row = sim.make_move(col)
-        if row is None:
+    def _wins_immediately(self, fb: FastBoard, col: int, player: int) -> bool:
+        sim = fb.clone()
+        r   = sim.make_move(col)
+        if r < 0:
             return False
-        done, winner = sim.game_over(row, col)
-        return done and winner == player_turn_parity
+        return sim.check_win(player)
 
-    def _simulate(self, board: Board, first_col: int) -> float:
-        """Return 1.0 win, 0.5 draw, 0.0 loss for the acting player."""
-        sim = self._clone(board)
-        acting_player = 1 if sim.turn % 2 == 0 else 2
-
-        row = sim.make_move(first_col)
-        if row is None:
+    def _simulate(self, fb: FastBoard, first_col: int, acting: int) -> float:
+        sim = fb.clone()
+        r   = sim.make_move(first_col)
+        if r < 0:
             return 0.0
-
-        done, winner = sim.game_over(row, first_col)
-        if done:
-            return _outcome(winner, acting_player)
+        if sim.check_win(acting):
+            return 1.0
+        if sim.is_full():
+            return 0.5
 
         for _ in range(self.depth - 1):
             valid = sim.valid_moves()
             if not valid:
-                break
+                return 0.5
             col = random.choice(valid)
-            row = sim.make_move(col)
-            if row is None:
-                break
-            done, winner = sim.game_over(row, col)
-            if done:
-                return _outcome(winner, acting_player)
+            r   = sim.make_move(col)
+            last = sim.last_player()
+            if sim.check_win(last):
+                return 1.0 if last == acting else 0.0
+            if sim.is_full():
+                return 0.5
 
-        return 0.5  # no terminal reached → neutral
-
-
-def _outcome(winner: int, acting_player: int) -> float:
-    if winner == acting_player:
-        return 1.0
-    if winner == 0:
         return 0.5
-    return 0.0
