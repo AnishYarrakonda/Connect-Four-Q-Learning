@@ -190,6 +190,9 @@ class ConnectFourGUI:
         self.game_over = False
         self.animating = False
         self.ai_job: Optional[str] = None
+        self.active_animation_job: Optional[str] = None
+        self.active_falling_token: Optional[int] = None
+        self.animation_generation = 0
 
         self.token_ids: list[list[Optional[int]]] = [
             [None for _ in range(Board.COLS)] for _ in range(Board.ROWS)
@@ -294,6 +297,7 @@ class ConnectFourGUI:
         if self.ai_job is not None:
             self.root.after_cancel(self.ai_job)
             self.ai_job = None
+        self.cancel_active_animation()
 
         self.board.reset()
         self.current_player = 2 if self.mode_var.get() == "Human vs AI" and self.human_side_var.get().startswith("Second") else 1
@@ -306,6 +310,16 @@ class ConnectFourGUI:
         self.draw_static_board()
         self.update_match_label()
         self.schedule_ai_if_needed()
+
+    def cancel_active_animation(self) -> None:
+        self.animation_generation += 1
+        if self.active_animation_job is not None:
+            self.root.after_cancel(self.active_animation_job)
+            self.active_animation_job = None
+        if self.active_falling_token is not None:
+            self.canvas.delete(self.active_falling_token)
+            self.active_falling_token = None
+        self.animating = False
 
     def model_display_name(self) -> str:
         if self.agent.model_path:
@@ -409,6 +423,7 @@ class ConnectFourGUI:
 
     def animate_drop(self, col: int, row: int, player: int, on_done) -> None:
         """Smooth falling token animation with a small bounce on landing."""
+        generation = self.animation_generation
         color = self.P1_COLOR if player == 1 else self.P2_COLOR
         x0, y0, x1, y1 = self.cell_bbox(row, col)
         diameter = x1 - x0
@@ -427,6 +442,7 @@ class ConnectFourGUI:
             outline="#222",
             width=2,
         )
+        self.active_falling_token = token_id
 
         velocity = 0.0
         gravity = 2.2
@@ -435,6 +451,10 @@ class ConnectFourGUI:
         max_bounces = 1
 
         def step(current_y: float, v: float, bounces: int) -> None:
+            if generation != self.animation_generation:
+                self.canvas.delete(token_id)
+                return
+
             new_v = v + gravity
             new_y = current_y + new_v
 
@@ -445,6 +465,8 @@ class ConnectFourGUI:
                     bounces += 1
                 else:
                     self.canvas.delete(token_id)
+                    self.active_falling_token = None
+                    self.active_animation_job = None
                     self.token_ids[row][col] = self.draw_token(row, col, player)
                     on_done()
                     return
@@ -456,7 +478,7 @@ class ConnectFourGUI:
                 cx + radius,
                 new_y + radius,
             )
-            self.root.after(16, lambda: step(new_y, new_v, bounces))
+            self.active_animation_job = self.root.after(16, lambda: step(new_y, new_v, bounces))
 
         step(start_y, velocity, bounce_count)
 
