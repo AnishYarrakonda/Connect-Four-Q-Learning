@@ -24,6 +24,8 @@ class Config(TypedDict):
     watch_game: bool
     watch_steps: int
     watch_delay: float
+    matplotlib_enabled: bool
+    plot_update_interval: int
     progress_interval: int
     win_reward: float
     loss_reward: float
@@ -47,6 +49,8 @@ DEFAULT_CONFIG: Config = {
     "watch_game": False,
     "watch_steps": 100,
     "watch_delay": 0.2,
+    "matplotlib_enabled": True,
+    "plot_update_interval": 25,
     "progress_interval": 25,
     "win_reward": 1.0,
     "loss_reward": -1.0,
@@ -254,11 +258,21 @@ def configure_visuals(config: Config) -> None:
     if section_default("Visualization Settings"):
         print("Using default visualization settings.")
         return
-    config["watch_game"] = ask_yes_no("Watch board states while running?", config["watch_game"])
+    config["watch_game"] = ask_yes_no("Enable Tkinter game viewer during training?", config["watch_game"])
     if config["watch_game"]:
         config["watch_steps"] = ask_int("Show a full game in Tkinter every N episodes", config["watch_steps"], minimum=1)
         config["watch_delay"] = ask_float(
             "Delay between Tkinter move updates (seconds)", config["watch_delay"], minimum=0.0
+        )
+    config["matplotlib_enabled"] = ask_yes_no(
+        "Enable live Matplotlib dashboard during training?",
+        config["matplotlib_enabled"],
+    )
+    if config["matplotlib_enabled"]:
+        config["plot_update_interval"] = ask_int(
+            "Update Matplotlib every N episodes",
+            config["plot_update_interval"],
+            minimum=1,
         )
 
 
@@ -653,9 +667,14 @@ def run_training(config: Config) -> None:
     viewer: TrainingTkViewer | None = None
     if config["watch_game"]:
         viewer = TrainingTkViewer(watch_delay=config["watch_delay"])
-    plt.ion()
-    live_fig, live_axes = plt.subplots(2, 2, figsize=(15, 10))
-    plt.show(block=False)
+
+    live_fig: plt.Figure | None = None
+    live_axes: list[list[plt.Axes]] | None = None
+    if config["matplotlib_enabled"]:
+        plt.ion()
+        live_fig, live_axes_np = plt.subplots(2, 2, figsize=(15, 10))
+        live_axes = live_axes_np.tolist()  # type: ignore[assignment]
+        plt.show(block=False)
 
     for episode in range(1, config["num_episodes"] + 1):
         render_this_episode = bool(config["watch_game"] and config["watch_steps"] > 0 and episode % config["watch_steps"] == 0)
@@ -709,10 +728,15 @@ def run_training(config: Config) -> None:
                     checkpoint_note=checkpoint_note,
                 )
             )
-        if episode % 25 == 0:
+        if (
+            config["matplotlib_enabled"]
+            and live_fig is not None
+            and live_axes is not None
+            and episode % config["plot_update_interval"] == 0
+        ):
             update_live_training_plots(
                 fig=live_fig,
-                axes=live_axes,  # type: ignore[arg-type]
+                axes=live_axes,
                 episodes=episodes,
                 winners=winners,
                 game_lengths=game_lengths,
@@ -735,23 +759,18 @@ def run_training(config: Config) -> None:
         )
     )
     print("Training complete.")
-    update_live_training_plots(
-        fig=live_fig,
-        axes=live_axes,  # type: ignore[arg-type]
-        episodes=episodes,
-        winners=winners,
-        game_lengths=game_lengths,
-        epsilons=epsilons,
-        run_name=config["run_name"],
-    )
-    plt.ioff()
-    build_training_plots(
-        episodes=episodes,
-        winners=winners,
-        game_lengths=game_lengths,
-        epsilons=epsilons,
-        run_name=config["run_name"],
-    )
+    if config["matplotlib_enabled"] and live_fig is not None and live_axes is not None:
+        update_live_training_plots(
+            fig=live_fig,
+            axes=live_axes,
+            episodes=episodes,
+            winners=winners,
+            game_lengths=game_lengths,
+            epsilons=epsilons,
+            run_name=config["run_name"],
+        )
+        plt.ioff()
+        plt.show()
 
 
 if __name__ == "__main__":
