@@ -5,7 +5,7 @@ from board import Board
 from agent import Agent
 
 # simulate a single game
-def play_game(agent: Agent, train: bool = True, watch: bool = False, watch_steps: int = 1) -> int:
+def play_game(agent: Agent, train: bool = True, watch_steps: int = 1) -> int:
     board = Board()     # make the board
     done = False        # track if game is done
     winner = 0          # store the winner
@@ -40,7 +40,7 @@ def play_game(agent: Agent, train: bool = True, watch: bool = False, watch_steps
         done, winner = board.game_over(row, action)
 
         # print board if we want to watch the game
-        if watch and (board.turn % watch_steps == 0):
+        if watch_steps > 0 and (board.turn % watch_steps == 0):
             print(board)
             time.sleep(0.2)
 
@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     # training loop
     for episode in range(num_episodes):
-        winner = play_game(agent_1, train=True, watch=True)
+        winner = play_game(agent_1, train=True, watch_steps=100)
 
         # update stats
         if winner == 1:
