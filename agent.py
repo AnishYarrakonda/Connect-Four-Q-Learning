@@ -1,5 +1,6 @@
 # imports
 import random
+from collections import deque
 from typing import Optional
 
 import torch
@@ -40,7 +41,31 @@ class ConnectFourCNN(nn.Module):
         return self.head(features)
 
 
+class ReplayBuffer:
+    def __init__(self, capacity: int) -> None:
+        self.buffer: deque[tuple[torch.Tensor, int, float, torch.Tensor, bool]] = deque(maxlen=capacity)
+
+    def push(
+        self,
+        state: torch.Tensor,
+        action: int,
+        reward: float,
+        next_state: torch.Tensor,
+        done: bool,
+    ) -> None:
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size: int) -> list[tuple[torch.Tensor, int, float, torch.Tensor, bool]]:
+        return random.sample(self.buffer, batch_size)
+
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+
 class Agent:
+    BATCH_SIZE = 64
+    MIN_BUFFER = 1000
+
     def __init__(
         self: "Agent",
         lr: float = 0.0003,
@@ -57,6 +82,7 @@ class Agent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
         self.gamma = gamma
+        self.replay_buffer = ReplayBuffer(capacity=50_000)
         self.model.eval()
 
     def predict(self: "Agent", board: Board) -> torch.Tensor:
@@ -82,32 +108,48 @@ class Agent:
 
     def train_step(
         self: "Agent",
+    ) -> None:
+        if len(self.replay_buffer) < self.MIN_BUFFER:
+            return
+
+        transitions = self.replay_buffer.sample(self.BATCH_SIZE)
+        states, actions, rewards, next_states, dones = zip(*transitions)
+
+        state_batch = torch.stack(list(states)).to(self.device)
+        action_batch = torch.tensor(actions, dtype=torch.long, device=self.device)
+        reward_batch = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+        next_state_batch = torch.stack(list(next_states)).to(self.device)
+        done_batch = torch.tensor(dones, dtype=torch.float32, device=self.device)
+
+        self.model.train()
+        q_values = self.model(state_batch)
+        q_selected = q_values.gather(1, action_batch.unsqueeze(1)).squeeze(1)
+
+        self.model.eval()
+        with torch.no_grad():
+            next_q_values = self.model(next_state_batch)
+            max_next_q = next_q_values.max(dim=1).values
+            target_values = reward_batch + (1.0 - done_batch) * self.gamma * max_next_q
+
+        loss = self.loss_fn(q_selected, target_values)
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        self.model.eval()
+
+    def push(
+        self: "Agent",
         state: torch.Tensor,
         action: int,
         reward: float,
         next_state: torch.Tensor,
         done: bool,
     ) -> None:
-        state = state.to(self.device)
-        next_state = next_state.to(self.device)
-        if state.dim() == 1:
-            state = state.unsqueeze(0)
-        if next_state.dim() == 1:
-            next_state = next_state.unsqueeze(0)
-
-        self.model.train()
-        q_values = self.model(state)
-        self.model.eval()
-        with torch.no_grad():
-            next_q = self.model(next_state)
-
-        target_q = q_values.clone().detach()
-        target_value = reward if done else reward + self.gamma * torch.max(next_q).item()
-        target_q[0, action] = torch.tensor(target_value, dtype=torch.float32, device=self.device)
-
-        loss = self.loss_fn(q_values, target_q)
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        self.model.eval()
+        cpu_state = state.detach().cpu()
+        cpu_next_state = next_state.detach().cpu()
+        if cpu_state.dim() > 1:
+            cpu_state = cpu_state.squeeze(0)
+        if cpu_next_state.dim() > 1:
+            cpu_next_state = cpu_next_state.squeeze(0)
+        self.replay_buffer.push(cpu_state, action, float(reward), cpu_next_state, bool(done))

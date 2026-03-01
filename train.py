@@ -366,7 +366,8 @@ def play_game(
                 winner = 2 if acting_player == 1 else 1
                 if train:
                     next_state = Board.board_to_tensor(board=board)
-                    agent.train_step(state, action, loss_reward, next_state, done)
+                    agent.push(state, action, loss_reward, next_state, done)
+                    agent.train_step()
                 break
 
             done, winner = board.game_over(row, action)
@@ -381,7 +382,8 @@ def play_game(
                 elif done and winner != 0:
                     reward = loss_reward
                 next_state = Board.board_to_tensor(board=board)
-                agent.train_step(state, action, reward, next_state, done)
+                agent.push(state, action, reward, next_state, done)
+                agent.train_step()
                 last_move_by_player[acting_player] = (state.detach().clone(), action)
 
                 # Ensure the losing player's most recent move gets a terminal loss update.
@@ -389,13 +391,14 @@ def play_game(
                     loser = 2 if winner == 1 else 1
                     if loser in last_move_by_player:
                         loser_state, loser_action = last_move_by_player[loser]
-                        agent.train_step(
+                        agent.push(
                             loser_state,
                             loser_action,
                             loss_reward,
                             next_state,
                             True,
                         )
+                        agent.train_step()
     finally:
         if force_zero_epsilon:
             agent.epsilon = original_epsilon
