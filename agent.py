@@ -9,7 +9,7 @@ from board import Board
 
 
 class ConnectFourCNN(nn.Module):
-    """CNN Q-network consuming flattened (2*6*7 + 1) input."""
+    """CNN Q-network consuming flattened, perspective-aligned 2*6*7 input."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -26,7 +26,7 @@ class ConnectFourCNN(nn.Module):
         )
         conv_out = 128 * Board.ROWS * Board.COLS
         self.head = nn.Sequential(
-            nn.Linear(conv_out + 1, 256),
+            nn.Linear(conv_out, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             nn.Linear(256, 128),
@@ -35,25 +35,20 @@ class ConnectFourCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        spatial = x[:, : 2 * Board.ROWS * Board.COLS]
-        turn = x[:, -1:]
-        spatial = spatial.view(-1, 2, Board.ROWS, Board.COLS)
+        spatial = x.view(-1, 2, Board.ROWS, Board.COLS)
         features = self.conv(spatial).flatten(1)
-        combined = torch.cat([features, turn], dim=1)
-        return self.head(combined)
+        return self.head(features)
 
 
 class Agent:
     def __init__(
         self: "Agent",
-        layers: list[int],  # kept for compatibility with existing config flow
         lr: float = 0.0003,
         epsilon: float = 1.0,
         epsilon_decay: float = 0.997,
         epsilon_min: float = 0.05,
         gamma: float = 0.97,
     ) -> None:
-        _ = layers
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
         self.model: nn.Module = ConnectFourCNN().to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
@@ -62,6 +57,7 @@ class Agent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
         self.gamma = gamma
+        self.model.eval()
 
     def predict(self: "Agent", board: Board) -> torch.Tensor:
         state = Board.board_to_tensor(board).to(self.device)
@@ -114,3 +110,4 @@ class Agent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
+        self.model.eval()

@@ -13,10 +13,15 @@ class Board:
     # convert board state to tensor for neural network input
     @staticmethod
     def board_to_tensor(board: "Board") -> torch.Tensor:
-        turn_plane_value = 1.0 if board.turn % 2 == 0 else 0.0
-        board_state = torch.stack([board.player1_bits, board.player2_bits]).flatten()
-        turn_tensor = torch.tensor([turn_plane_value], dtype=torch.float32, device=device)
-        state = torch.cat([board_state, turn_tensor]).unsqueeze(0)
+        # Always encode from current player's perspective:
+        # channel 0 = side to move, channel 1 = opponent.
+        if board.turn % 2 == 0:
+            current_bits = board.player1_bits
+            opponent_bits = board.player2_bits
+        else:
+            current_bits = board.player2_bits
+            opponent_bits = board.player1_bits
+        state = torch.stack([current_bits, opponent_bits]).flatten().unsqueeze(0)
         return state.to(device)
 
     # create board

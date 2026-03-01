@@ -13,7 +13,6 @@ from board import Board
 
 
 class Config(TypedDict):
-    layers: list[int]
     lr: float
     epsilon: float
     epsilon_decay: float
@@ -38,13 +37,12 @@ class Config(TypedDict):
 
 
 DEFAULT_CONFIG: Config = {
-    "layers": [128, 64],
     "lr": 0.0003,
     "epsilon": 1.0,
     "epsilon_decay": 0.997,
     "epsilon_min": 0.05,
     "gamma": 0.97,
-    "num_episodes": 1000,
+    "num_episodes": 10000,
     "train": True,
     "watch_game": False,
     "watch_steps": 100,
@@ -196,27 +194,6 @@ def ask_text(prompt: str, default: str) -> str:
     return raw if raw else default
 
 
-def ask_layers(default: list[int]) -> list[int]:
-    default_label = ",".join(map(str, default))
-    while True:
-        raw = input(
-            f"Hidden layer sizes (comma-separated, e.g. 128,64) [default={default_label}]: "
-        ).strip()
-        if raw == "":
-            return default
-        try:
-            values = [int(piece.strip()) for piece in raw.split(",") if piece.strip()]
-            if not values:
-                print("Please provide at least one hidden layer size.")
-                continue
-            if any(v <= 0 for v in values):
-                print("Layer sizes must be positive integers.")
-                continue
-            return values
-        except ValueError:
-            print("Please enter comma-separated integers like: 256,128,64")
-
-
 def section_default(section_name: str) -> bool:
     raw = input(
         f"\n{section_name}: type 'default' to keep this section default, or press Enter to customize: "
@@ -231,7 +208,6 @@ def configure_agent(config: Config) -> None:
     config["resume_training"] = ask_yes_no("Resume training from an existing model checkpoint?", config["resume_training"])
     if config["resume_training"]:
         config["resume_model_path"] = ask_text("Path to model checkpoint (.pt/.pth)", config["resume_model_path"])
-    config["layers"] = ask_layers(config["layers"])
     config["lr"] = ask_float("Learning rate", config["lr"], minimum=0.0)
     config["epsilon"] = ask_float("Initial epsilon", config["epsilon"], minimum=0.0, maximum=1.0)
     config["epsilon_decay"] = ask_float(
@@ -367,6 +343,7 @@ def play_game(
     board = Board()
     done = False
     winner = 0
+    last_move_by_player: dict[int, tuple[torch.Tensor, int]] = {}
 
     while not done:
         valid_moves = board.valid_moves()
@@ -400,6 +377,20 @@ def play_game(
                 reward = loss_reward
             next_state = Board.board_to_tensor(board=board)
             agent.train_step(state, action, reward, next_state, done)
+            last_move_by_player[acting_player] = (state.detach().clone(), action)
+
+            # Ensure the losing player's most recent move gets a terminal loss update.
+            if done and winner in (1, 2):
+                loser = 2 if winner == 1 else 1
+                if loser in last_move_by_player:
+                    loser_state, loser_action = last_move_by_player[loser]
+                    agent.train_step(
+                        loser_state,
+                        loser_action,
+                        loss_reward,
+                        next_state,
+                        True,
+                    )
 
     return winner, board.turn
 
@@ -618,7 +609,6 @@ def run_training(config: Config) -> None:
             raise FileNotFoundError(f"Resume model not found: {config['resume_model_path']}")
 
     agent = Agent(
-        layers=config["layers"],
         lr=config["lr"],
         epsilon=config["epsilon"],
         epsilon_decay=config["epsilon_decay"],
