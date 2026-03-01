@@ -258,7 +258,7 @@ def configure_visuals(config: Config) -> None:
     if config["watch_game"]:
         config["watch_steps"] = ask_int("Show a full game in Tkinter every N episodes", config["watch_steps"], minimum=1)
         config["watch_delay"] = ask_float(
-            "Delay between board prints (seconds)", config["watch_delay"], minimum=0.0
+            "Delay between Tkinter move updates (seconds)", config["watch_delay"], minimum=0.0
         )
 
 
