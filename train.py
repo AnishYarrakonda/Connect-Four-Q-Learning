@@ -39,11 +39,11 @@ class Config(TypedDict):
 
 DEFAULT_CONFIG: Config = {
     "layers": [128, 64],
-    "lr": 0.001,
+    "lr": 0.0003,
     "epsilon": 1.0,
-    "epsilon_decay": 0.995,
-    "epsilon_min": 0.01,
-    "gamma": 0.95,
+    "epsilon_decay": 0.997,
+    "epsilon_min": 0.05,
+    "gamma": 0.97,
     "num_episodes": 1000,
     "train": True,
     "watch_game": False,
@@ -52,10 +52,10 @@ DEFAULT_CONFIG: Config = {
     "matplotlib_enabled": True,
     "plot_update_interval": 25,
     "progress_interval": 25,
-    "win_reward": 1.0,
-    "loss_reward": -1.0,
+    "win_reward": 0.5,
+    "loss_reward": -1.5,
     "save_enabled": True,
-    "save_interval": 500,
+    "save_interval": 2500,
     "run_name": "agent",
     "save_dir": "models",
     "resume_training": False,
@@ -302,22 +302,6 @@ def build_runtime_config() -> Config:
         config["run_name"] = f"{base_name}_continued"
 
     return config
-
-
-def infer_layers_from_state_dict(state_dict: dict[str, torch.Tensor]) -> list[int]:
-    linear_weights: list[tuple[int, torch.Tensor]] = []
-    for key, value in state_dict.items():
-        if key.endswith(".weight") and value.ndim == 2:
-            key_prefix = key.rsplit(".", 1)[0]
-            if key_prefix.isdigit():
-                linear_weights.append((int(key_prefix), value))
-
-    linear_weights.sort(key=lambda item: item[0])
-    if len(linear_weights) < 2:
-        raise ValueError("Checkpoint does not contain enough linear layers to infer architecture.")
-
-    hidden_layers = [int(weight.shape[0]) for _, weight in linear_weights[:-1]]
-    return hidden_layers
 
 
 def load_weights_for_resume(agent: Agent, model_path: str) -> None:
@@ -627,24 +611,14 @@ def save_checkpoint(agent: Agent, config: Config, episode: int) -> str:
 
 
 def run_training(config: Config) -> None:
-    layers = config["layers"]
     if config["resume_training"]:
         if not config["resume_model_path"]:
             raise ValueError("Resume training is enabled, but no resume_model_path was provided.")
         if not os.path.exists(config["resume_model_path"]):
             raise FileNotFoundError(f"Resume model not found: {config['resume_model_path']}")
 
-        loaded = torch.load(config["resume_model_path"], map_location="cpu")
-        if isinstance(loaded, dict) and "state_dict" in loaded and isinstance(loaded["state_dict"], dict):
-            state_dict = loaded["state_dict"]
-        elif isinstance(loaded, dict):
-            state_dict = loaded
-        else:
-            raise ValueError("Unsupported checkpoint format for resume.")
-        layers = infer_layers_from_state_dict(state_dict)
-
     agent = Agent(
-        layers=layers,
+        layers=config["layers"],
         lr=config["lr"],
         epsilon=config["epsilon"],
         epsilon_decay=config["epsilon_decay"],
@@ -655,7 +629,6 @@ def run_training(config: Config) -> None:
     if config["resume_training"]:
         load_weights_for_resume(agent, config["resume_model_path"])
         print(f"Resumed from checkpoint: {config['resume_model_path']}")
-        print(f"Inferred layers from checkpoint: {layers}")
 
     p1_wins = 0
     p2_wins = 0

@@ -1,5 +1,4 @@
 import random
-import re
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -7,6 +6,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from agent import ConnectFourCNN
 
 
 class Board:
@@ -102,33 +102,6 @@ class Agent:
         self.model: Optional[nn.Module] = None
         self.model_path: Optional[str] = None
 
-    @staticmethod
-    def _natural_key(text: str) -> list[object]:
-        return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
-
-    def _build_model_from_state_dict(self, state_dict: dict[str, torch.Tensor]) -> nn.Sequential:
-        weight_items: list[tuple[str, torch.Tensor]] = []
-        for key, value in state_dict.items():
-            if key.endswith("weight") and value.ndim == 2:
-                weight_items.append((key, value))
-
-        if not weight_items:
-            raise ValueError("No linear layer weights found in state dict.")
-
-        weight_items.sort(key=lambda kv: self._natural_key(kv[0]))
-
-        layers: list[nn.Module] = [nn.Flatten()]
-        for idx, (_, weight) in enumerate(weight_items):
-            out_features, in_features = weight.shape
-            layers.append(nn.Linear(in_features, out_features, device=self.device))
-            if idx < len(weight_items) - 1:
-                layers.append(nn.ReLU())
-
-        model = nn.Sequential(*layers).to(self.device)
-        model.load_state_dict(state_dict, strict=False)
-        model.eval()
-        return model
-
     def load_model(self, path: str) -> tuple[bool, str]:
         try:
             loaded = torch.load(path, map_location=self.device)
@@ -140,7 +113,9 @@ class Agent:
                     state_dict = loaded["state_dict"]
                 else:
                     state_dict = loaded
-                model = self._build_model_from_state_dict(state_dict)
+                model = ConnectFourCNN().to(self.device)
+                model.load_state_dict(state_dict)
+                model.eval()
             else:
                 raise ValueError("Unsupported model file format.")
 
