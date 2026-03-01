@@ -7,8 +7,10 @@ Curriculum ladder:
   Stage 2 → 2-ply MCTS  (depth 2)
   ...up to MAX_MCTS_DEPTH
 
-Promotion: when the agent wins >= PROMOTE_WIN_RATE of the last EVAL_WINDOW
-games against the current stage, it advances to the next stage.
+Training:   epsilon-greedy, pushes to replay buffer, runs learn() each episode.
+Evaluation: fully greedy (epsilon=0), no buffer pushes, no learning.
+            Run every EVAL_INTERVAL training episodes.
+            Promotion is decided ONLY from eval results — epsilon never taints it.
 """
 
 import os
@@ -29,14 +31,25 @@ from mcts import MCTSOpponent
 SAVE_DIR            = "models"
 RUN_NAME            = "cf_dqn"
 NUM_EPISODES        = 50_000
-SAVE_INTERVAL       = 2_000       # save a checkpoint every N episodes
-REPORT_INTERVAL     = 200         # print a stats line every N episodes
+SAVE_INTERVAL       = 2_000       # save a checkpoint every N training episodes
+REPORT_INTERVAL     = 200         # print a training stats line every N episodes
 
 # Curriculum
 MAX_MCTS_DEPTH      = 6           # highest MCTS depth to train against
 MCTS_SIMULATIONS    = 40          # rollouts per move for the MCTS opponent
-PROMOTE_WIN_RATE    = 0.60        # win-rate threshold to advance to next stage
-EVAL_WINDOW         = 300         # rolling window size for win-rate evaluation
+PROMOTE_WIN_RATE    = 0.60        # greedy win-rate needed to advance
+
+# Evaluation — low-temperature sampling, no learning, no epsilon
+EVAL_INTERVAL       = 500         # run an eval every N training episodes
+EVAL_GAMES          = 300         # games per eval — half as P1, half as P2
+                                  # need round(0.60 * 300) = 180 wins to promote
+EVAL_TEMPERATURE    = 0.2         # agent uses temperature sampling during eval
+                                  # low enough to be near-greedy, high enough that
+                                  # games aren't identical clones of each other
+
+# Training visibility
+ROLLING_WINDOW      = 250         # rolling window size shown in training stats
+                                  # NOTE: epsilon-polluted — informational only, never used for promotion
 
 # DQN hyper-params
 LR                  = 1e-3
@@ -67,14 +80,9 @@ class ANSI:
     RESET  = "\033[0m"
 
 
-def _clone_board(board: Board) -> Board:
-    b = Board()
-    b.player1_bits = board.player1_bits.clone()
-    b.player2_bits = board.player2_bits.clone()
-    b.turn = board.turn
-    b.move_history = board.move_history.copy()
-    return b
-
+# ---------------------------------------------------------------------------
+# Single training episode — epsilon-greedy, pushes to buffer, calls learn()
+# ---------------------------------------------------------------------------
 
 def play_episode(
     agent: DQNAgent,
@@ -82,15 +90,14 @@ def play_episode(
     agent_is_p1: bool,
 ) -> tuple[int, int]:
     """
-    Play one full game.  Agent plays as P1 when agent_is_p1=True, else as P2.
-    Returns (winner, game_length).
-    winner: 1=P1 wins, 2=P2 wins, 0=draw.
+    Play one training game.
+    Returns (winner, game_length).  winner: 1=P1, 2=P2, 0=draw.
     """
     board = Board()
     trajectory: list[tuple[torch.Tensor, int, float, torch.Tensor, bool]] = []
 
-    agent_player   = 1 if agent_is_p1 else 2
-    opp_player     = 2 if agent_is_p1 else 1
+    agent_player = 1 if agent_is_p1 else 2
+    opp_player   = 2 if agent_is_p1 else 1
 
     while True:
         current_player = 1 if board.turn % 2 == 0 else 2
@@ -100,22 +107,20 @@ def play_episode(
             winner = 0
             break
 
-        # CPU tensor for buffer storage — moved to device in batch by ReplayBuffer.sample()
-        state = Board.board_to_tensor_cpu(board)
+        state = Board.board_to_tensor(board)
 
         if current_player == agent_player:
-            action = agent.select_action(board)
+            action = agent.select_action(board)   # epsilon-greedy
         else:
             action = opponent.select_action(board)
 
         row = board.make_move(action)
         if row is None:
-            winner = opp_player  # illegal move → lose
+            winner = opp_player
             break
 
         done, winner = board.game_over(row, action)
 
-        # Build reward and transition only for agent moves
         if current_player == agent_player:
             if done:
                 if winner == agent_player:
@@ -127,18 +132,17 @@ def play_episode(
             else:
                 reward = 0.0
 
-            next_state = Board.board_to_tensor_cpu(board)
+            next_state = Board.board_to_tensor(board)
             trajectory.append((state, action, reward, next_state, done))
 
         if done:
             break
 
-    # If the opponent won, back-fill a loss onto the last agent transition
+    # Back-fill loss reward if opponent won
     if trajectory and winner == opp_player:
         s, a, _, ns, d = trajectory[-1]
         trajectory[-1] = (s, a, LOSS_REWARD, ns, True)
 
-    # Push all agent transitions into replay and run one learn step
     for (s, a, r, ns, d) in trajectory:
         agent.buffer.push(s, a, r, ns, d)
 
@@ -147,6 +151,129 @@ def play_episode(
     return winner, board.turn
 
 
+# ---------------------------------------------------------------------------
+# Evaluation — temperature sampling, no buffer pushes, no learning
+# ---------------------------------------------------------------------------
+
+def run_eval(
+    agent: DQNAgent,
+    opponent: MCTSOpponent,
+    n_games: int = EVAL_GAMES,
+    temperature: float = EVAL_TEMPERATURE,
+) -> tuple[int, int, int]:
+    """
+    Play n_games using low-temperature policy sampling (not pure greedy).
+    Returns (wins, draws, losses) from the agent's perspective.
+    Alternates sides each game so neither player has a first-move advantage.
+    Does NOT touch the replay buffer or call learn().
+
+    Why temperature and not greedy: a fully greedy agent vs a deterministic
+    MCTS opponent produces the exact same game every time (2 unique games
+    repeated 150x each), making the eval meaningless. Low temperature keeps
+    the agent near-optimal while generating genuinely diverse game trees.
+    """
+    wins = draws = losses = 0
+
+    for i in range(n_games):
+        agent_is_p1  = (i % 2 == 0)
+        agent_player = 1 if agent_is_p1 else 2
+
+        board = Board()
+
+        while True:
+            current_player = 1 if board.turn % 2 == 0 else 2
+            valid = board.valid_moves()
+
+            if not valid:
+                winner = 0
+                break
+
+            if current_player == agent_player:
+                action = agent.policy_net.sample_move(board, temperature=temperature)
+            else:
+                action = opponent.select_action(board)
+
+            row = board.make_move(action)
+            if row is None:
+                winner = 2 if agent_is_p1 else 1
+                break
+
+            done, winner = board.game_over(row, action)
+            if done:
+                break
+
+        if winner == agent_player:
+            wins += 1
+        elif winner == 0:
+            draws += 1
+        else:
+            losses += 1
+
+    return wins, draws, losses
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def print_train_stats(
+    episode: int,
+    stage: int,
+    total_wins: int,
+    total_losses: int,
+    total_draws: int,
+    rolling_wins: int,
+    rolling_total: int,
+    rolling_wr: float,
+    avg_len: float,
+    epsilon: float,
+    elapsed_s: float,
+) -> None:
+    total = total_wins + total_losses + total_draws or 1
+    train_wr = total_wins / total
+    line = (
+        f"Train Ep {episode:>6} | "
+        f"Stage {ANSI.CYAN}{stage}{ANSI.RESET} | "
+        f"W {ANSI.GREEN}{total_wins:>5}{ANSI.RESET} "
+        f"L {ANSI.RED}{total_losses:>5}{ANSI.RESET} "
+        f"D {ANSI.CYAN}{total_draws:>4}{ANSI.RESET} "
+        f"(overall {train_wr:.1%}) | "
+        f"Last {rolling_total}: {ANSI.YELLOW}{rolling_wins}/{rolling_total}{ANSI.RESET} "
+        f"({ANSI.YELLOW}{rolling_wr:.1%} ε-polluted{ANSI.RESET}) | "
+        f"AvgLen {avg_len:>5.1f} | "
+        f"ε {ANSI.MAGENTA}{epsilon:.3f}{ANSI.RESET} | "
+        f"Time {elapsed_s:>7.1f}s"
+    )
+    print(line)
+
+
+def print_eval_stats(
+    episode: int,
+    stage: int,
+    wins: int,
+    draws: int,
+    losses: int,
+    threshold: int,
+    promoted: bool,
+) -> None:
+    n = wins + draws + losses
+    wr = wins / n if n else 0.0
+    status = f"{ANSI.GREEN}✓ PROMOTED{ANSI.RESET}" if promoted else f"{ANSI.RED}not yet ({wins}/{threshold} wins){ANSI.RESET}"
+    line = (
+        f"  ╔═ EVAL @ ep {episode} | Stage {ANSI.CYAN}{stage}{ANSI.RESET} | "
+        f"W {ANSI.GREEN}{wins}{ANSI.RESET} "
+        f"D {ANSI.CYAN}{draws}{ANSI.RESET} "
+        f"L {ANSI.RED}{losses}{ANSI.RESET} "
+        f"({ANSI.GREEN if promoted else ANSI.YELLOW}{wr:.1%}{ANSI.RESET} eval WR @ T={EVAL_TEMPERATURE}, "
+        f"need {PROMOTE_WIN_RATE:.0%}) → {status}"
+    )
+    print(line)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint
+# ---------------------------------------------------------------------------
+
 def save_checkpoint(agent: DQNAgent, episode: int, stage: int) -> str:
     os.makedirs(SAVE_DIR, exist_ok=True)
     path = os.path.join(SAVE_DIR, f"{RUN_NAME}_ep{episode}_stage{stage}.pth")
@@ -154,35 +281,17 @@ def save_checkpoint(agent: DQNAgent, episode: int, stage: int) -> str:
     return path
 
 
-def print_stats(
-    episode: int,
-    stage: int,
-    p1_wins: int,
-    p2_wins: int,
-    draws: int,
-    rolling_win_rate: float,
-    avg_len: float,
-    epsilon: float,
-    total_s: float,
-) -> None:
-    total = p1_wins + p2_wins + draws or 1
-    line = (
-        f"Ep {episode:>6} | "
-        f"Stage {ANSI.CYAN}{stage}{ANSI.RESET} | "
-        f"P1 {ANSI.RED}{p1_wins:>5}{ANSI.RESET} "
-        f"P2 {ANSI.YELLOW}{p2_wins:>5}{ANSI.RESET} "
-        f"D {ANSI.CYAN}{draws:>4}{ANSI.RESET} | "
-        f"WinRate {ANSI.GREEN}{rolling_win_rate:.2%}{ANSI.RESET} | "
-        f"AvgLen {avg_len:>5.1f} | "
-        f"ε {ANSI.MAGENTA}{epsilon:.3f}{ANSI.RESET} | "
-        f"Time {total_s:>7.1f}s"
-    )
-    print(line)
-
+# ---------------------------------------------------------------------------
+# Main training loop
+# ---------------------------------------------------------------------------
 
 def run_training() -> None:
+    promote_threshold = round(PROMOTE_WIN_RATE * EVAL_GAMES)  # 180 — use round() not int() to avoid truncation drift
     print(f"Starting curriculum DQN training — {NUM_EPISODES} episodes")
-    print(f"MCTS ladder: depth 0 → {MAX_MCTS_DEPTH}  |  promote at {PROMOTE_WIN_RATE:.0%} over {EVAL_WINDOW} games\n")
+    print(f"MCTS ladder: depth 0 → {MAX_MCTS_DEPTH}")
+    print(f"Promotion: greedy eval every {EVAL_INTERVAL} episodes, "
+          f"need {promote_threshold}/{EVAL_GAMES} wins ({PROMOTE_WIN_RATE:.0%})")
+    print(f"Training stats show a rolling {ROLLING_WINDOW}-game window (epsilon-polluted, informational only)\n")
 
     agent = DQNAgent(
         lr=LR,
@@ -202,64 +311,76 @@ def run_training() -> None:
     current_stage = 0
     opponent = MCTSOpponent(depth=current_stage, n_simulations=MCTS_SIMULATIONS)
 
-    p1_wins = draws = p2_wins = 0
-    rolling: list[int] = []   # 1=agent win, 0=draw/loss
+    total_wins = total_losses = total_draws = 0
+    rolling: list[int] = []          # 1=win, 0=draw/loss — last ROLLING_WINDOW games
     game_lengths: list[int] = []
     total_start = time.perf_counter()
 
     for episode in range(1, NUM_EPISODES + 1):
-        # Alternate sides every episode for balanced training
-        agent_is_p1 = (episode % 2 == 1)
+        agent_is_p1 = (episode % 2 == 1)   # alternates every game: P1, P2, P1, P2 ...
 
         winner, length = play_episode(agent, opponent, agent_is_p1)
         game_lengths.append(length)
 
         agent_player = 1 if agent_is_p1 else 2
         if winner == agent_player:
-            p1_wins += 1
+            total_wins += 1
             rolling.append(1)
         elif winner == 0:
-            draws += 1
+            total_draws += 1
             rolling.append(0)
         else:
-            p2_wins += 1
+            total_losses += 1
             rolling.append(0)
 
-        if len(rolling) > EVAL_WINDOW:
+        if len(rolling) > ROLLING_WINDOW:
             rolling.pop(0)
 
-        rolling_win_rate = sum(rolling) / len(rolling) if rolling else 0.0
+        rolling_wins = sum(rolling)
+        rolling_wr   = rolling_wins / len(rolling) if rolling else 0.0
 
-        # Curriculum promotion
-        if (
-            len(rolling) >= EVAL_WINDOW
-            and rolling_win_rate >= PROMOTE_WIN_RATE
-            and current_stage < MAX_MCTS_DEPTH
-        ):
-            current_stage += 1
-            opponent = MCTSOpponent(depth=current_stage, n_simulations=MCTS_SIMULATIONS)
-            rolling.clear()
-            save_checkpoint(agent, episode, current_stage - 1)
-            print(f"\n{'='*70}")
-            print(f"  ✓ Promoted to Stage {current_stage}  (MCTS depth {current_stage})")
-            print(f"{'='*70}\n")
-
-        # Periodic reporting
+        # ---- periodic training report ----
         if episode % REPORT_INTERVAL == 0:
             avg_len = statistics.mean(game_lengths[-REPORT_INTERVAL:])
-            print_stats(
+            print_train_stats(
                 episode=episode,
                 stage=current_stage,
-                p1_wins=p1_wins,
-                p2_wins=p2_wins,
-                draws=draws,
-                rolling_win_rate=rolling_win_rate,
+                total_wins=total_wins,
+                total_losses=total_losses,
+                total_draws=total_draws,
+                rolling_wins=rolling_wins,
+                rolling_total=len(rolling),
+                rolling_wr=rolling_wr,
                 avg_len=avg_len,
                 epsilon=agent.epsilon,
-                total_s=time.perf_counter() - total_start,
+                elapsed_s=time.perf_counter() - total_start,
             )
 
-        # Periodic checkpointing
+        # ---- greedy evaluation + promotion check ----
+        if episode % EVAL_INTERVAL == 0 and current_stage < MAX_MCTS_DEPTH:
+            eval_wins, eval_draws, eval_losses = run_eval(agent, opponent)
+            promoted = eval_wins >= promote_threshold
+            print_eval_stats(
+                episode=episode,
+                stage=current_stage,
+                wins=eval_wins,
+                draws=eval_draws,
+                losses=eval_losses,
+                threshold=promote_threshold,
+                promoted=promoted,
+            )
+
+            if promoted:
+                save_checkpoint(agent, episode, current_stage)
+                current_stage += 1
+                opponent = MCTSOpponent(depth=current_stage, n_simulations=MCTS_SIMULATIONS)
+                # Reset counters so reported win-rate reflects the new stage only
+                total_wins = total_losses = total_draws = 0
+                rolling.clear()
+                game_lengths.clear()
+                print(f"  ╚═ Advanced to Stage {current_stage} (MCTS depth {current_stage})\n")
+
+        # ---- periodic checkpoint ----
         if episode % SAVE_INTERVAL == 0:
             path = save_checkpoint(agent, episode, current_stage)
             print(f"  → Checkpoint: {path}")
