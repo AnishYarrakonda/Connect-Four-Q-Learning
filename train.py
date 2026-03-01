@@ -351,6 +351,9 @@ def play_game(
     try:
         if watch_game and viewer is not None:
             viewer.render(board=board, episode=episode, done=False, winner=0)
+        # Collect episode moves for optional Monte Carlo replay
+        episode_transitions: list[tuple[torch.Tensor, int, int, torch.Tensor]] = []
+
         while not done:
             valid_moves = board.valid_moves()
             if not valid_moves:
@@ -368,6 +371,8 @@ def play_game(
                 if train:
                     next_state = Board.board_to_tensor(board=board)
                     agent.push(state, action, loss_reward, next_state, done)
+                    # record move for Monte Carlo returns (state, action, player, next_state)
+                    episode_transitions.append((state.detach().clone(), action, acting_player, next_state.detach().clone()))
                     if agent._push_count % 4 == 0:
                         agent.train_step()
                 break
@@ -406,6 +411,19 @@ def play_game(
     finally:
         if force_zero_epsilon:
             agent.epsilon = original_epsilon
+        # After episode ends, push Monte Carlo returns into replay buffer using fixed gamma
+        if train and episode_transitions:
+            T = len(episode_transitions)
+            for i, (s, a, player, ns) in enumerate(episode_transitions):
+                steps_until_terminal = T - 1 - i
+                if winner == 0:
+                    mc_reward = 0.0
+                else:
+                    base = win_reward if player == winner else loss_reward
+                    mc_reward = (agent.gamma ** steps_until_terminal) * base
+                agent.push(s, a, mc_reward, ns, False)
+                if agent._push_count % 4 == 0:
+                    agent.train_step()
 
     return winner, board.turn
 

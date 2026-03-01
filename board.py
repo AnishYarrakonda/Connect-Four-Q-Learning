@@ -33,6 +33,8 @@ class Board:
 
         # tracks the current game turn (0 for player 1, 1 for player 2)
         self.turn = 0
+        # Stores played columns in order (values 0..6), max length 42.
+        self.move_history: list[int] = []
 
 
     # reset the board to the initial state
@@ -40,6 +42,7 @@ class Board:
         self.player1_bits.zero_()
         self.player2_bits.zero_()
         self.turn = 0
+        self.move_history.clear()
 
 
     # check horizontal 4 in a row
@@ -158,6 +161,7 @@ class Board:
                     self.player2_bits[i, col] = 1
 
                 self.turn += 1
+                self.move_history.append(col)
                 return i  # Return the row where the coin landed
 
         return None
