@@ -131,6 +131,15 @@ class TrainingTkViewer:
         except tk.TclError:
             self.enabled = False
 
+    def heartbeat(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            self.enabled = False
+
 
 def ask_yes_no(prompt: str, default: bool) -> bool:
     default_hint = "Y/n" if default else "y/N"
@@ -415,15 +424,22 @@ def evaluate_vs_snapshot(
     agent: Agent,
     snapshot_state_dict: dict[str, torch.Tensor],
     num_games: int = 100,
-) -> int:
+    viewer: TrainingTkViewer | None = None,
+) -> tuple[int, int, int, int, int]:
     snapshot_model = ConnectFourCNN().to(agent.device)
     snapshot_model.load_state_dict(snapshot_state_dict)
     snapshot_model.eval()
     agent.model.eval()
 
     wins = 0
+    wins_as_p1 = 0
+    wins_as_p2 = 0
+    losses = 0
+    draws = 0
     half = num_games // 2
     for game_idx in range(num_games):
+        if viewer is not None and game_idx % 5 == 0:
+            viewer.heartbeat()
         board = Board()
         done = False
         winner = 0
@@ -447,10 +463,24 @@ def evaluate_vs_snapshot(
                 break
             done, winner = board.game_over(row, action)
 
-        if (current_is_player1 and winner == 1) or ((not current_is_player1) and winner == 2):
-            wins += 1
+        if current_is_player1:
+            if winner == 1:
+                wins += 1
+                wins_as_p1 += 1
+            elif winner == 2:
+                losses += 1
+            else:
+                draws += 1
+        else:
+            if winner == 2:
+                wins += 1
+                wins_as_p2 += 1
+            elif winner == 1:
+                losses += 1
+            else:
+                draws += 1
 
-    return wins
+    return wins, wins_as_p1, wins_as_p2, losses, draws
 
 
 def checkpoint_path(config: Config, episode: int) -> str:
@@ -506,6 +536,8 @@ def run_training(config: Config) -> None:
     block_start = total_start
 
     for episode in range(1, config["num_episodes"] + 1):
+        if viewer is not None:
+            viewer.heartbeat()
         render_this_episode = bool(config["watch_game"] and config["watch_steps"] > 0 and episode % config["watch_steps"] == 0)
         winner, game_length = play_game(
             agent=agent,
@@ -522,6 +554,8 @@ def run_training(config: Config) -> None:
 
         # Visualization-only rollout (not part of training/stats): greedy policy, no updates.
         if render_this_episode and viewer is not None:
+            if not viewer.enabled:
+                viewer = TrainingTkViewer(watch_delay=config["watch_delay"])
             play_game(
                 agent=agent,
                 train=False,
@@ -564,13 +598,22 @@ def run_training(config: Config) -> None:
         eval_summary = ""
         if episode % SNAPSHOT_INTERVAL == 0:
             snapshot_episode = episode - SNAPSHOT_INTERVAL
-            eval_wins = evaluate_vs_snapshot(
+            eval_wins, eval_wins_as_p1, eval_wins_as_p2, eval_losses, eval_draws = evaluate_vs_snapshot(
                 agent=agent,
                 snapshot_state_dict=frozen_snapshots[snapshot_episode],
                 num_games=EVAL_GAMES,
+                viewer=viewer,
             )
-            eval_summary = f"Self-Play vs Ep{snapshot_episode}: {eval_wins}/{EVAL_GAMES}"
-            print(f"Self-play evaluation at episode {episode}: won {eval_wins}/{EVAL_GAMES} vs episode {snapshot_episode}")
+            eval_summary = (
+                f"Self-Play vs Ep{snapshot_episode}: {eval_wins}/{EVAL_GAMES} "
+                f"(W/L/D {eval_wins}/{eval_losses}/{eval_draws}; "
+                f"P1 {eval_wins_as_p1}/50, P2 {eval_wins_as_p2}/50)"
+            )
+            print(
+                f"Self-play evaluation at episode {episode}: won {eval_wins}/{EVAL_GAMES} "
+                f"vs episode {snapshot_episode} | W/L/D: {eval_wins}/{eval_losses}/{eval_draws} "
+                f"(as P1: {eval_wins_as_p1}/50, as P2: {eval_wins_as_p2}/50)"
+            )
 
         if episode % REPORT_INTERVAL == 0:
             print(
