@@ -81,7 +81,7 @@ def _score_color(s: float) -> str:
 _COL_SEP = dim("  │  ")
 
 HEADER = (
-    bcyan(f"{'EP':>10}")
+    bcyan(f"{'EPISODE':>10}")
     + _COL_SEP
     + bwhite(f"{'AVG SCORE':>9}")
     + "  "
@@ -95,7 +95,7 @@ HEADER = (
     + _COL_SEP
     + bmagenta(f"{'ε':>7}")
     + _COL_SEP
-    + dim(f"{'BUF':>8}")
+    + dim(f"{'BUFFER':>8}")
     + _COL_SEP
     + dim(f"{'LOSS':>8}")
 )
@@ -197,7 +197,7 @@ def train(
 
     print()
     print(bwhite("  ┌─────────────────────────────────────────────────────┐"))
-    print(bwhite("  │") + bcyan("         2048  ·  Deep Q-Network  Trainer           ") + bwhite("│"))
+    print(bwhite("  │") + bcyan("         2048  ·  Deep Q-Network  Trainer           ") + bwhite(" │"))
     print(bwhite("  └─────────────────────────────────────────────────────┘"))
     print(f"  device      : {bgreen(str(DEVICE))}")
     net_params = sum(p.numel() for p in TwentyFortyEightNet().parameters())
