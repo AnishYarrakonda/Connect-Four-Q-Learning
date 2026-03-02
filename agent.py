@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import random
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -223,6 +224,9 @@ class DQNAgent:
         self.reward_cfg  = reward_cfg or DEFAULT_REWARD_CFG
         self.grad_steps  = 0
         self._step_count = 0
+        # death penalty settings
+        self.death_k    = 3.0   # scaling factor k (~2–5 suggested)
+        self.death_back = 5     # how many moves before terminal to penalize
 
         self.policy = TwoZeroFourEightNet().to(DEVICE)
         self.target = TwoZeroFourEightNet().to(DEVICE)
@@ -273,6 +277,8 @@ class DQNAgent:
         state    = encode(board.board)
         steps    = 0
         game_max = int(board.board.max())
+        # track buffer indices for transitions pushed during this episode
+        episode_push_indices: list[int] = []
 
         while not board.game_over:
             valid      = board.valid_actions()
@@ -286,6 +292,9 @@ class DQNAgent:
             if train:
                 reward = compute_reward(prev_score, prev_max, board, self.reward_cfg)
                 self.buffer.push(state, action, reward, next_state, board.game_over)
+                # record index of pushed transition (push advanced ptr)
+                last_idx = (self.buffer.ptr - 1) % self.buffer.cap
+                episode_push_indices.append(int(last_idx))
                 self._step_count += 1
                 if self._step_count % self.learn_every == 0:
                     self.learn()
@@ -294,6 +303,22 @@ class DQNAgent:
             steps += 1
 
         self.episode_count += 1
+
+        # If episode ended in terminal (death) while training, apply retroactive
+        # penalty distributed across the last `death_back` pushed transitions.
+        if train and board.game_over and episode_push_indices:
+            max_tile = int(board.board.max())
+            if max_tile > 0:
+                penalty_raw = self.death_k * math.log2(max_tile)
+                # convert raw penalty to logged-domain penalty (negative)
+                penalty_logged = -math.log1p(penalty_raw)
+                N = min(self.death_back, len(episode_push_indices))
+                weights = np.arange(N, 0, -1, dtype=np.float32)
+                weights = weights / float(weights.sum())
+                for i in range(N):
+                    idx = episode_push_indices[-1 - i]
+                    self.buffer.rewards[idx] = float(self.buffer.rewards[idx] + penalty_logged * weights[i])
+
         return board.score, int(board.board.max()), steps
 
     @torch.no_grad()
