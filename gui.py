@@ -213,16 +213,16 @@ class GUI:
         self._best_var  = _score_box(row, "BEST")
 
         # live stats panel
-        stats_f = tk.Frame(s, bg=C_PANEL, padx=14, pady=10)
-        stats_f.pack(fill="x", **pad, pady=(14, 0)) # type: ignore
+        stats_f = tk.Frame(s, bg=C_PANEL, padx=int(14*SCALE), pady=int(10*SCALE))
+        stats_f.pack(fill="x", **pad, pady=(int(14*SCALE), 0)) # type: ignore
 
         def _stat_row(parent, label):
             r2 = tk.Frame(parent, bg=C_PANEL)
-            r2.pack(fill="x", pady=2)
-            tk.Label(r2, text=label, font=("Helvetica", 10),
+            r2.pack(fill="x", pady=int(2*SCALE))
+            tk.Label(r2, text=label, font=("Helvetica", int(10*SCALE)),
                      fg=FG_MED, bg=C_PANEL, width=12, anchor="w").pack(side="left")
             var = tk.StringVar(value="0")
-            tk.Label(r2, textvariable=var, font=("Helvetica", 10, "bold"),
+            tk.Label(r2, textvariable=var, font=("Helvetica", int(10*SCALE), "bold"),
                      fg=FG_DARK, bg=C_PANEL).pack(side="left")
             return var
 
@@ -231,35 +231,35 @@ class GUI:
 
         def _divider(label=""):
             f2 = tk.Frame(s, bg=C_SIDE)
-            f2.pack(fill="x", **pad, pady=(16, 6)) # type: ignore
+            f2.pack(fill="x", **pad, pady=(int(16*SCALE), int(6*SCALE))) # type: ignore
             if label:
                 tk.Label(f2, text=f"── {label} ──",
-                         font=("Helvetica", 9, "bold"),
+                         font=("Helvetica", int(9*SCALE), "bold"),
                          fg=FG_MED, bg=C_SIDE).pack(anchor="w")
             else:
                 tk.Frame(f2, bg=C_PANEL, height=1).pack(fill="x")
 
         _divider("AI CONTROL")
 
-        _btn(s, "⊕  Load Model", self._load_model_dialog,
-             font_size=11).pack(fill="x", **pad) # type: ignore
+        _btn(s, "⊕  Load Model", self._load_model_dialog, # type: ignore
+            font_size=int(11*SCALE)).pack(fill="x", **pad) # type: ignore
 
         self._model_label = tk.Label(
             s, text="no model loaded",
-            font=("Helvetica", 9), fg=FG_MED, bg=C_SIDE,
+            font=("Helvetica", int(9*SCALE)), fg=FG_MED, bg=C_SIDE,
             wraplength=SIDE_W-32, justify="left",
         )
-        self._model_label.pack(anchor="w", **pad, pady=(4, 0)) # type: ignore
+        self._model_label.pack(anchor="w", **pad, pady=(int(4*SCALE), 0)) # type: ignore
 
         # speed slider
         spd = tk.Frame(s, bg=C_SIDE)
-        spd.pack(fill="x", **pad, pady=(12, 0)) # type: ignore
-        tk.Label(spd, text="Speed", font=("Helvetica", 10, "bold"),
-                 fg=FG_DARK, bg=C_SIDE).pack(anchor="w")
+        spd.pack(fill="x", **pad, pady=(int(12*SCALE), 0)) # type: ignore
+        tk.Label(spd, text="Speed", font=("Helvetica", int(10*SCALE), "bold"),
+             fg=FG_DARK, bg=C_SIDE).pack(anchor="w")
         sr = tk.Frame(spd, bg=C_SIDE)
         sr.pack(fill="x")
-        tk.Label(sr, text="Fast", font=("Helvetica", 8),
-                 fg=FG_MED, bg=C_SIDE).pack(side="left")
+        tk.Label(sr, text="Fast", font=("Helvetica", int(8*SCALE)),
+             fg=FG_MED, bg=C_SIDE).pack(side="left")
         self._speed_var = tk.IntVar(value=200)
         tk.Scale(
             sr, from_=0, to=600, orient="horizontal",
@@ -268,30 +268,30 @@ class GUI:
             highlightthickness=0, sliderrelief="flat",
             command=lambda v: setattr(self, "_ai_delay", int(v)),
         ).pack(side="left", fill="x", expand=True)
-        tk.Label(sr, text="Slow", font=("Helvetica", 8),
-                 fg=FG_MED, bg=C_SIDE).pack(side="left")
+        tk.Label(sr, text="Slow", font=("Helvetica", int(8*SCALE)),
+             fg=FG_MED, bg=C_SIDE).pack(side="left")
 
         # watch / pause button
         self._watch_btn = tk.Button(
             s, text="▶  Watch AI", command=self._toggle_ai,
             bg=C_BTN_AI, fg="white",
             activebackground=C_BTN_AIH, activeforeground="white",
-            font=("Helvetica", 12, "bold"),
+            font=("Helvetica", int(12*SCALE), "bold"),
             relief="flat", bd=0, cursor="hand2",
-            padx=12, pady=9,
+            padx=int(12*SCALE), pady=int(9*SCALE),
         )
-        self._watch_btn.pack(fill="x", **pad, pady=(10, 4)) # type: ignore
+        self._watch_btn.pack(fill="x", **pad, pady=(int(10*SCALE), int(4*SCALE))) # type: ignore
         self._watch_btn.bind("<Enter>", lambda e: self._watch_btn.config(bg=C_BTN_AIH))
         self._watch_btn.bind("<Leave>", lambda e: self._watch_btn.config(
             bg=C_BTN_AIH if self._ai_running else C_BTN_AI))
 
         _btn(s, "+ New Game", self._new_game_click,
-             font_size=11).pack(fill="x", **pad) # type: ignore
+            font_size=int(11*SCALE)).pack(fill="x", **pad) # type: ignore
 
         _divider("SESSION")
 
-        sess_f = tk.Frame(s, bg=C_PANEL, padx=14, pady=10)
-        sess_f.pack(fill="x", **pad, pady=(0, 4)) # type: ignore
+        sess_f = tk.Frame(s, bg=C_PANEL, padx=int(14*SCALE), pady=int(10*SCALE))
+        sess_f.pack(fill="x", **pad, pady=(0, int(4*SCALE))) # type: ignore
         self._sess_games_var = _stat_row(sess_f, "Games")
         self._sess_score_var = _stat_row(sess_f, "Best score")
         self._sess_tile_var  = _stat_row(sess_f, "Best tile")
@@ -555,51 +555,51 @@ class GUI:
             # Frosted card
             px, py = W//2, W//2
             self.canvas.create_rectangle(
-                px-185, py-118, px+185, py+138,
+                px-int(185*SCALE), py-int(118*SCALE), px+int(185*SCALE), py+int(138*SCALE),
                 fill="#f9f6f2", outline=C_GRID, width=2,
                 tags="gameover",
             )
             self.canvas.create_text(
-                px, py-72,
+                px, py-int(72*SCALE),
                 text="Game Over",
-                font=("Helvetica Neue", 44, "bold"),
+                font=("Helvetica Neue", int(44*SCALE), "bold"),
                 fill=FG_DARK, tags="gameover",
             )
             self.canvas.create_text(
-                px, py-20,
+                px, py-int(20*SCALE),
                 text=f"Score:  {self.board.score:,}",
-                font=("Helvetica", 21),
+                font=("Helvetica", int(21*SCALE)),
                 fill=FG_MED, tags="gameover",
             )
             self.canvas.create_text(
-                px, py+18,
+                px, py+int(18*SCALE),
                 text=f"Best tile:  {self._current_best_tile}",
-                font=("Helvetica", 17),
+                font=("Helvetica", int(17*SCALE)),
                 fill=FG_MED, tags="gameover",
             )
 
             # buttons
             has_agent = self._agent is not None
-            btn_x = px - 80 if has_agent else px
+            btn_x = px - int(80*SCALE) if has_agent else px
 
             btn_new = tk.Button(
                 self.root, text="New Game",
-                font=("Helvetica", 13, "bold"),
+                font=("Helvetica", int(13*SCALE), "bold"),
                 fg="white", bg=C_BTN, relief="flat",
-                padx=18, pady=7, cursor="hand2",
+                padx=int(18*SCALE), pady=int(7*SCALE), cursor="hand2",
                 command=self._new_game_click,
             )
-            self.canvas.create_window(btn_x, py+88, window=btn_new, tags="gameover")
+            self.canvas.create_window(btn_x, py+int(88*SCALE), window=btn_new, tags="gameover")
 
             if has_agent:
                 btn_watch = tk.Button(
                     self.root, text="▶ Watch AI",
-                    font=("Helvetica", 13, "bold"),
+                    font=("Helvetica", int(13*SCALE), "bold"),
                     fg="white", bg=C_BTN_AI, relief="flat",
-                    padx=18, pady=7, cursor="hand2",
+                    padx=int(18*SCALE), pady=int(7*SCALE), cursor="hand2",
                     command=self._watch_again,
                 )
-                self.canvas.create_window(px+80, py+88, window=btn_watch, tags="gameover")
+                self.canvas.create_window(px+int(80*SCALE), py+int(88*SCALE), window=btn_watch, tags="gameover")
 
         self.root.after(60, lambda: _fade_step(0))
 
