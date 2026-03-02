@@ -401,8 +401,9 @@ def run_training() -> None:
         if ep % LEARN_EVERY == 0:
             _ = agent.learn()
 
-    agent.save(os.path.join(SAVE_DIR, f"{RUN_NAME}_final.pth"))
-    print(f"\nDone. {time.perf_counter()-t0:.1f}s")
+    # Save final checkpoint including curriculum depth
+    final_path = save_checkpoint(agent, NUM_EPISODES, current_depth)
+    print(f"\nDone. {time.perf_counter()-t0:.1f}s | Final checkpoint: {final_path}")
 
 
 if __name__ == "__main__":
