@@ -65,17 +65,17 @@ def _box_row(content: str) -> str:
 def _box_blank() -> str:
     return bwhite("  ║") + " " * BOX_IN + bwhite("║")
 def _hcol(label: str, w: int, fn: "function") -> str:  # type: ignore[type-arg]
-    return fn(label.center(w))
+    return fn(label.center(w))# type: ignore
 
 HEADER = (
-    _hcol("EPISODE",  W_EP,   bcyan)   + _SEP
-  + _hcol("AVG SCORE",W_ASC,  byellow) + _SEP
-  + _hcol("MAX SCORE",W_MSC,  bwhite)  + _SEP
-  + _hcol("MOVES",    W_MV,   bblue)   + _SEP
-  + _hcol("MED  MAX", W_TILE, byellow) + _SEP
-  + _hcol("ε",        W_EPS,  bmagenta)+ _SEP
-  + _hcol("BUF",      W_BUF,  dim)     + _SEP
-  + _hcol("LOSS",     W_LOSS, dim)
+    _hcol("EPISODE",  W_EP,   bcyan)   + _SEP# type: ignore
+  + _hcol("AVG SCORE",W_ASC,  byellow) + _SEP# type: ignore
+  + _hcol("MAX SCORE",W_MSC,  bwhite)  + _SEP# type: ignore
+  + _hcol("MOVES",    W_MV,   bblue)   + _SEP# type: ignore
+  + _hcol("MED  MAX", W_TILE, byellow) + _SEP# type: ignore
+  + _hcol("ε",        W_EPS,  bmagenta)+ _SEP# type: ignore
+  + _hcol("BUF",      W_BUF,  dim)     + _SEP# type: ignore
+  + _hcol("LOSS",     W_LOSS, dim)# type: ignore
 )
 DIVIDER = dim("─" * TABLE_W)
 
@@ -290,8 +290,8 @@ def train(
             print(_eval_banner(ep, stats, elapsed, cfg))
             print(HEADER); print(DIVIDER)
             row_count = 0
-            if stats["mean_score"] > best_eval_score:
-                best_eval_score = float(stats["mean_score"])
+            if stats["mean_score"] > best_eval_score:# type: ignore
+                best_eval_score = float(stats["mean_score"])# type: ignore
                 best_path = os.path.join(models_dir, "best.pt")
                 agent.save(best_path)
                 print(f"  {bred('★')}  new best {byellow(f'{best_eval_score:,.0f}')} → {cyan(best_path)}")
@@ -462,7 +462,7 @@ def _wizard() -> dict:
 
     # ── episodes ─────────────────────────────────────────────────────────────
     print("  ── Run Length ──────────────────────────────────────────────")
-    n_episodes = _ask("Total episodes to train", default=50_000, cast=int)
+    n_episodes = _ask("Total episodes to train", default=50_000, cast=int)# type: ignore
     print()
 
     # ── preset or custom? ─────────────────────────────────────────────────
@@ -470,7 +470,7 @@ def _wizard() -> dict:
     print("  [1]  Recommended  (best defaults for a fresh run)")
     print("  [2]  Quick test   (5k episodes, fast settings)")
     print("  [3]  Custom       (you set every value)")
-    mode = _ask("Choose mode", default=1, cast=int, valid=[1, 2, 3])
+    mode = _ask("Choose mode", default=1, cast=int, valid=[1, 2, 3])# type: ignore
     print()
 
     if mode == 1:
@@ -509,14 +509,14 @@ def _wizard() -> dict:
     # ── mode 3: fully custom ─────────────────────────────────────────────────
     print("  ── Hyperparameters ─────────────────────────────────────────")
     print("  (learning rate controls how big each gradient step is)")
-    lr          = _ask("Learning rate              (recommended: 3e-4)", default=3e-4, cast=float)
-    learn_every = _ask("Gradient update every N steps (recommended: 4)", default=4,    cast=int)
+    lr          = _ask("Learning rate              (recommended: 3e-4)", default=3e-4, cast=float)# type: ignore
+    learn_every = _ask("Gradient update every N steps (recommended: 4)", default=4,    cast=int)# type: ignore
     print()
 
     print("  ── Exploration (Epsilon) ───────────────────────────────────")
     print("  (epsilon = chance of random move; starts high, decays over time)")
-    eps_end   = _ask("Min epsilon when fully trained (recommended: 0.02)", default=0.02,  cast=float)
-    eps_decay = _ask("Decay rate per step — 0.9998=slow 0.9995=med 0.999=fast", default=0.9995, cast=float)
+    eps_end   = _ask("Min epsilon when fully trained (recommended: 0.02)", default=0.02,  cast=float)# type: ignore
+    eps_decay = _ask("Decay rate per step — 0.9998=slow 0.9995=med 0.999=fast", default=0.9995, cast=float)# type: ignore
     print()
 
     print("  ── Reward Shaping ──────────────────────────────────────────")
@@ -524,27 +524,27 @@ def _wizard() -> dict:
     print()
     print("  survival_bonus   — flat reward just for surviving each step")
     print("                     0.0 = agent must earn everything from merges")
-    survival_bonus   = _ask("Survival bonus per step    (recommended: 0.0)", default=0.0,  cast=float)
+    survival_bonus   = _ask("Survival bonus per step    (recommended: 0.0)", default=0.0,  cast=float)# type: ignore
 
     print()
     print("  empty_weight     — bonus per free cell on the board")
     print("                     rewards keeping the board open for future moves")
-    empty_weight     = _ask("Empty cell bonus weight    (recommended: 0.3)", default=0.3,  cast=float)
+    empty_weight     = _ask("Empty cell bonus weight    (recommended: 0.3)", default=0.3,  cast=float)# type: ignore
 
     print()
     print("  monotone_weight  — bonus for having tiles sorted in snake order")
     print("                     rewards the corner strategy the AI naturally learns")
-    monotone_weight  = _ask("Monotone ordering bonus    (recommended: 0.2)", default=0.2,  cast=float)
+    monotone_weight  = _ask("Monotone ordering bonus    (recommended: 0.2)", default=0.2,  cast=float)# type: ignore
 
     print()
     print("  no_merge_penalty — penalty for moves that slide but don't merge")
     print("                     punishes passive shuffling moves")
-    no_merge_penalty = _ask("No-merge penalty           (recommended: 0.5)", default=0.5,  cast=float)
+    no_merge_penalty = _ask("No-merge penalty           (recommended: 0.5)", default=0.5,  cast=float)# type: ignore
 
     print()
     print("  milestone_weight — bonus × log2(tile) when agent hits a new max tile")
     print("                     big reward for achieving 256, 512, 1024 etc for first time")
-    milestone_weight = _ask("Milestone tile bonus       (recommended: 2.0)", default=2.0,  cast=float)
+    milestone_weight = _ask("Milestone tile bonus       (recommended: 2.0)", default=2.0,  cast=float)# type: ignore
 
     print()
     log_scale = _ask_bool("Use log reward compression? (recommended: yes)", default=True)
