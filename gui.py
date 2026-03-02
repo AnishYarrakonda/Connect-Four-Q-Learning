@@ -52,10 +52,13 @@ W       = 4 * CELL + 5 * PAD
 SIDE_W  = int(272 * SCALE)        # sidebar width
 
 # ─────────────────────────────── timing ───────────────────────────────────────
-SLIDE_MS = 100
-POP_MS   =  80
-SPAWN_MS = 140
-FRAME_MS =  14
+# Base animation timings (ms). Actual timings are scaled at runtime
+# according to the AI speed slider (`self._ai_delay`) so the user can
+# push the UI to very high speeds (10-20 moves/sec) for fast watching.
+BASE_SLIDE_MS = 100
+BASE_POP_MS   =  80
+BASE_SPAWN_MS = 140
+BASE_FRAME_MS =  14
 
 # ─────────────────────────────── palette ──────────────────────────────────────
 C_WIN    = "#faf8ef"
@@ -145,6 +148,27 @@ class GUI:
         self._current_moves      = 0
         self._current_best_tile  = 0
 
+        self._init_window()
+
+    # ----- animation timing helpers ---------------------------------
+    def _anim_factor(self) -> float:
+        """
+        Compute a speed factor in (0.05 .. 1.0] from the current
+        AI delay slider (`self._ai_delay`). When the user sets low
+        AI delay (near 0) we allow animations to shrink to ~5% of
+        their base durations, enabling very fast playback.
+        """
+        # slider range is 0 .. 600; map to factor 0.05 .. 1.0
+        f = float(self._ai_delay) / 600.0 if hasattr(self, "_ai_delay") else 0.333
+        return max(0.05, min(1.0, f))
+
+    def _anim_ms(self, base_ms: int) -> int:
+        return max(2, int(base_ms * self._anim_factor()))
+
+    def _frame_ms(self) -> int:
+        return max(2, int(BASE_FRAME_MS * self._anim_factor()))
+
+    def _init_window(self):
         # root
         self.root = tk.Tk()
         self.root.title("2048")
@@ -396,7 +420,7 @@ class GUI:
             sprites.append((rect, txt, sx, sy, ex, ey))
 
         t0  = time.perf_counter()
-        dur = SLIDE_MS / 1000.0
+        dur = self._anim_ms(BASE_SLIDE_MS) / 1000.0
 
         def _frame():
             t  = 1.0 if self._snap else (time.perf_counter()-t0)/dur
@@ -408,7 +432,7 @@ class GUI:
                 self.canvas.coords(rect, x-h, y-h, x+h, y+h)
                 self.canvas.coords(txt, x, y)
             if t < 1.0:
-                self.root.after(FRAME_MS, _frame)
+                self.root.after(self._frame_ms(), _frame)
             else:
                 self._phase_pop(new_g, anim_moves, spawn_idx)
 
@@ -438,7 +462,7 @@ class GUI:
             return
 
         t0  = time.perf_counter()
-        dur = POP_MS / 1000.0
+        dur = self._anim_ms(BASE_POP_MS) / 1000.0
 
         def _frame():
             t     = 1.0 if self._snap else (time.perf_counter()-t0)/dur
@@ -449,7 +473,7 @@ class GUI:
                 if v:
                     self._draw_tile(*_cell_center(r, c), v, scale=scale, tag="pop")
             if t < 1.0:
-                self.root.after(FRAME_MS, _frame)
+                self.root.after(self._frame_ms(), _frame)
             else:
                 self.canvas.delete("pop")
                 for r, c in merged:
@@ -471,7 +495,7 @@ class GUI:
         cx, cy     = _cell_center(sp_r, sp_c)
         h          = CELL // 2
         t0         = time.perf_counter()
-        dur        = SPAWN_MS / 1000.0
+        dur        = self._anim_ms(BASE_SPAWN_MS) / 1000.0
 
         def _frame():
             t     = 1.0 if self._snap else (time.perf_counter()-t0)/dur
@@ -481,7 +505,7 @@ class GUI:
                                          fill=C_EMPTY, outline="", tags="spawn")
             self._draw_tile(cx, cy, sp_v, scale=scale, tag="spawn")
             if t < 1.0:
-                self.root.after(FRAME_MS, _frame)
+                self.root.after(self._frame_ms(), _frame)
             else:
                 self.canvas.delete("spawn")
                 self._draw_tile(cx, cy, sp_v, tag="tile")
@@ -683,7 +707,7 @@ class GUI:
         if not self._ai_running or self.board.game_over:
             return
         if self._animating:
-            self._ai_job = self.root.after(FRAME_MS, self._ai_step)
+            self._ai_job = self.root.after(self._frame_ms(), self._ai_step)
             return
 
         from agent import encode

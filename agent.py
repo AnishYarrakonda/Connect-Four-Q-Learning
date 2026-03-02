@@ -4,41 +4,15 @@ agent.py — Deep Q-Network agent for 2048.
 Architecture
 ────────────
 Input encoding:  (16, 4, 4) one-hot tensor.
-                 Channel i is 1 wherever a cell holds value 2^i.
-                 e.g. a "128" tile lights up channel 7 (2^7=128).
-
-Network:         Conv2d(16 → 64,  kernel=2×2)
-                 Conv2d(64 → 128, kernel=2×2)
-                 Conv2d(128→ 128, kernel=2×2)
-                 Linear(128 → 256) → Linear(256 → 4)
-
-Algorithm:       Double DQN with a pre-allocated numpy replay buffer,
-                 epsilon-greedy over *valid* actions only, configurable
-                 reward shaping, and gradient clipping.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REWARD SHAPING  ←  edit RewardConfig
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-All reward knobs live in the RewardConfig dataclass below.
-Change the values there — no hunting through run_episode().
-
-Key levers:
-  survival_bonus   — small +reward every step the game continues
-  log_scale        — apply log1p() to raw merge scores (keeps gradients sane)
-  empty_weight     — bonus proportional to number of free cells (encourages
-                     keeping the board open)
-  monotone_weight  — bonus when rows/cols are monotonically sorted (classic
-                     2048 heuristic: snaking tile order)
-  merge_weight     — multiplier on the raw merge score component
-  invalid_penalty  — negative reward for attempting an invalid move
-                     (only fires if you remove valid-action filtering)
+Network:         Conv2d(16→64) → Conv2d(64→128) → Conv2d(128→128) → FC(256) → FC(4)
+Algorithm:       Double DQN, epsilon-greedy over valid actions, configurable reward shaping.
 """
 
 from __future__ import annotations
 
 import sys
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -47,118 +21,99 @@ import torch.nn.functional as F
 
 from board import Board
 
-# ─────────────────────────────── globals ──────────────────────────────────────
 DEVICE     = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 DIRS       = ["up", "down", "left", "right"]
-N_CHANNELS = 16   # one-hot channels: log2 values 0…15  (covers up to tile 32768)
+N_CHANNELS = 16
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  REWARD SHAPING — edit these values to experiment
+#  REWARD SHAPING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dataclass
 class RewardConfig:
     """
-    Central place to tune every aspect of reward shaping.
+    Every reward knob in one place. All controllable from the CLI via train.py.
 
-    Quick-start recipes
-    ───────────────────
-    Vanilla (only merge score):
-        merge_weight=1.0, survival_bonus=0.0, log_scale=True,
-        empty_weight=0.0, monotone_weight=0.0
+    Recommended config for a fresh run:
+        merge_weight=1.0, log_scale=True
+        survival_bonus=0.0   ← no free points just for existing
+        empty_weight=0.3     ← reward keeping board open (long-term)
+        monotone_weight=0.2  ← reward snake tile ordering (long-term strategy)
+        no_merge_penalty=0.5 ← punish wasted moves that slide but don't merge
+        milestone_weight=2.0 ← big bonus for hitting a new max tile this game
 
-    Balanced (recommended default):
-        merge_weight=1.0, survival_bonus=1.0, log_scale=True,
-        empty_weight=0.1, monotone_weight=0.0
-
-    Aggressive heuristics (good for faster early learning):
-        merge_weight=1.0, survival_bonus=1.0, log_scale=True,
-        empty_weight=0.3, monotone_weight=0.2
+    Knob guide
+    ──────────
+    merge_weight     — multiplier on raw merge score (naturally proportional:
+                       merging two 1024s gives 512× more signal than two 2s)
+    log_scale        — compress rewards with log1p so Q-values stay bounded
+    survival_bonus   — flat reward per step. Set to 0 so agent must earn points.
+    empty_weight     — bonus per free cell. Rewards keeping options open.
+    monotone_weight  — bonus for sorted rows/cols (snake strategy). Try 0.1–0.3.
+    no_merge_penalty — penalty when move slides tiles but merges nothing.
+                       Discourages passive shuffling. Try 0.3–1.0.
+    milestone_weight — bonus = weight × log2(new_max) when agent sets a new
+                       personal-best tile this game. Rewards long-term building.
     """
-
-    # ── merge reward ──────────────────────────────────────────────────────────
-    merge_weight:  float = 1.0
-    """Multiplier on the raw score gained from tile merges this step."""
-
-    log_scale:     bool  = True
-    """Apply log1p() to the total reward. Keeps Q-value magnitudes bounded
-    when raw scores can spike to 65k+. Disable if you want raw rewards."""
-
-    # ── step-level bonuses ────────────────────────────────────────────────────
-    survival_bonus: float = 1.0
-    """Flat bonus added every step the game is still alive.
-    Motivates the agent to extend game length.
-    Set to 0.0 to train purely on merge score."""
-
-    empty_weight:  float = 0.1
-    """Bonus = empty_weight × (number of empty cells after the move).
-    Encourages keeping the board open so merges stay possible.
-    Typical range: 0.0 – 0.5."""
-
-    monotone_weight: float = 0.0
-    """Bonus = monotone_weight × monotonicity_score(board).
-    Rewards boards where each row/col is sorted (snake order).
-    Classic 2048 heuristic. Start around 0.1–0.3 if you enable it."""
-
-    # ── penalty ───────────────────────────────────────────────────────────────
-    invalid_penalty: float = 0.0
-    """Penalty for selecting an invalid action. Relevant only if you remove
-    the valid-action filter in act(). Keep at 0.0 for normal training."""
+    merge_weight:     float = 1.0
+    log_scale:        bool  = True
+    survival_bonus:   float = 0.0
+    empty_weight:     float = 0.3
+    monotone_weight:  float = 0.2
+    no_merge_penalty: float = 0.5
+    milestone_weight: float = 2.0
 
 
-# Module-level default — DQNAgent will use this unless you pass another one.
 DEFAULT_REWARD_CFG = RewardConfig()
 
 
 def _monotonicity(board_flat: np.ndarray) -> float:
-    """
-    Monotonicity heuristic: higher score when rows and columns are ordered
-    (either ascending or descending). Uses log2 values so tile magnitudes
-    are on a linear scale.
-
-    Returns a value in [0, ~1] (normalised by max possible).
-    """
+    """Score how sorted the board is. Higher = more snake-ordered."""
     g = board_flat.reshape(4, 4).astype(np.float32)
     g = np.where(g > 0, np.log2(np.maximum(g, 1)), 0.0)
     score = 0.0
     for row in g:
         diff = np.diff(row)
-        score += max(np.sum(diff[diff >= 0]), np.sum(-diff[diff <= 0]))
+        score += max(float(np.sum(diff[diff >= 0])), float(np.sum(-diff[diff <= 0])))
     for col in g.T:
         diff = np.diff(col)
-        score += max(np.sum(diff[diff >= 0]), np.sum(-diff[diff <= 0]))
-    return float(score) / 48.0   # 4 rows + 4 cols, max diff per pair ≈ 15
+        score += max(float(np.sum(diff[diff >= 0])), float(np.sum(-diff[diff <= 0])))
+    return score / 48.0
 
 
 def compute_reward(
     prev_score: int,
-    board: Board,
-    cfg: RewardConfig,
+    prev_max:   int,
+    board:      Board,
+    cfg:        RewardConfig,
 ) -> float:
-    """
-    Compute the shaped reward for one transition.
+    merge_delta = float(board.score - prev_score)
 
-    Args:
-        prev_score:  board.score *before* the move
-        board:       Board object *after* the move (and tile spawn)
-        cfg:         RewardConfig instance
+    # merge reward — proportional by nature (bigger merges = bigger delta)
+    reward = merge_delta * cfg.merge_weight
 
-    Returns:
-        Scalar reward (float). Will be log1p-scaled if cfg.log_scale=True.
-    """
-    raw_merge = float(board.score - prev_score) * cfg.merge_weight
+    # survival bonus (0.0 recommended — makes agent earn every point)
+    reward += cfg.survival_bonus
 
-    reward = raw_merge + cfg.survival_bonus
-
+    # empty cells bonus — rewards keeping the board open for future moves
     if cfg.empty_weight != 0.0:
-        n_empty = int(np.sum(board.board == 0))
-        reward += cfg.empty_weight * n_empty
+        reward += cfg.empty_weight * float(np.sum(board.board == 0))
 
+    # monotonicity bonus — rewards strategic tile ordering
     if cfg.monotone_weight != 0.0:
         reward += cfg.monotone_weight * _monotonicity(board.board)
 
+    # no-merge penalty — punishes passive moves that waste a turn
+    if cfg.no_merge_penalty != 0.0 and merge_delta == 0.0:
+        reward -= cfg.no_merge_penalty
+
+    # milestone bonus — big reward for setting a new personal-best tile this game
+    if cfg.milestone_weight != 0.0:
+        new_max = int(board.board.max())
+        if new_max > prev_max:
+            reward += cfg.milestone_weight * float(np.log2(new_max))
+
     if cfg.log_scale:
-        # log1p on the positive part; preserve sign for any negative reward
         reward = float(np.sign(reward) * np.log1p(abs(reward)))
 
     return reward
@@ -166,10 +121,6 @@ def compute_reward(
 
 # ─────────────────────────────── encoding ─────────────────────────────────────
 def encode(flat: np.ndarray) -> np.ndarray:
-    """
-    flat: int32 array of shape (16,) — raw board values.
-    Returns: float32 array of shape (16, 4, 4) — one-hot log2 encoding.
-    """
     out  = np.zeros((N_CHANNELS, 4, 4), dtype=np.float32)
     mask = flat > 0
     log2 = np.zeros(16, dtype=np.int64)
@@ -183,19 +134,6 @@ def encode(flat: np.ndarray) -> np.ndarray:
 
 # ─────────────────────────────── network ──────────────────────────────────────
 class TwoZeroFourEightNet(nn.Module):
-    """
-    Three stacked 2×2 convolutions → fully connected head.
-
-    Spatial walkthrough (no padding):
-      Input      : (B, 16, 4, 4)
-      After conv1: (B, 64,  3, 3)
-      After conv2: (B, 128, 2, 2)
-      After conv3: (B, 128, 1, 1)
-      Flatten    : (B, 128)
-      FC1        : (B, 256)
-      FC2 (out)  : (B, 4)    ← Q-value per action
-    """
-
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(N_CHANNELS, 64,  kernel_size=2)
@@ -205,7 +143,7 @@ class TwoZeroFourEightNet(nn.Module):
         self.fc2   = nn.Linear(256, 4)
         self._init_weights()
 
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
@@ -223,23 +161,18 @@ class TwoZeroFourEightNet(nn.Module):
 
 # ─────────────────────────────── replay buffer ────────────────────────────────
 class ReplayBuffer:
-    """
-    Pre-allocated circular numpy buffer.  Much faster than a Python deque of
-    tensors because we do one big numpy fancy-index on every sample() call.
-    """
-
     def __init__(self, capacity: int = 100_000):
-        self.cap   = capacity
-        self.ptr   = 0
-        self.size  = 0
-
+        self.cap  = capacity
+        self.ptr  = 0
+        self.size = 0
         self.states  = np.zeros((capacity, N_CHANNELS, 4, 4), dtype=np.float32)
         self.nstates = np.zeros((capacity, N_CHANNELS, 4, 4), dtype=np.float32)
         self.actions = np.zeros(capacity, dtype=np.int64)
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.dones   = np.zeros(capacity, dtype=np.bool_)
 
-    def push(self, state, action, reward, nstate, done):
+    def push(self, state: np.ndarray, action: int, reward: float,
+             nstate: np.ndarray, done: bool) -> None:
         i = self.ptr
         self.states[i]  = state
         self.nstates[i] = nstate
@@ -249,14 +182,15 @@ class ReplayBuffer:
         self.ptr  = (i + 1) % self.cap
         self.size = min(self.size + 1, self.cap)
 
-    def sample(self, batch: int):
+    def sample(self, batch: int) -> tuple[torch.Tensor, ...]:
         idx = np.random.randint(0, self.size, batch)
-        s  = torch.from_numpy(self.states[idx]).to(DEVICE)
-        a  = torch.from_numpy(self.actions[idx]).to(DEVICE)
-        r  = torch.from_numpy(self.rewards[idx]).to(DEVICE)
-        ns = torch.from_numpy(self.nstates[idx]).to(DEVICE)
-        d  = torch.from_numpy(self.dones[idx]).to(DEVICE)
-        return s, a, r, ns, d
+        return (
+            torch.from_numpy(self.states[idx]).to(DEVICE),
+            torch.from_numpy(self.actions[idx]).to(DEVICE),
+            torch.from_numpy(self.rewards[idx]).to(DEVICE),
+            torch.from_numpy(self.nstates[idx]).to(DEVICE),
+            torch.from_numpy(self.dones[idx]).to(DEVICE),
+        )
 
     def __len__(self) -> int:
         return self.size
@@ -264,31 +198,19 @@ class ReplayBuffer:
 
 # ─────────────────────────────── agent ────────────────────────────────────────
 class DQNAgent:
-    """
-    Double DQN agent.
-
-    Pass a custom RewardConfig to __init__ to change reward shaping:
-
-        cfg = RewardConfig(survival_bonus=0.5, empty_weight=0.2, monotone_weight=0.1)
-        agent = DQNAgent(reward_cfg=cfg)
-    """
-
     def __init__(
         self,
-        lr:          float = 1e-4,
-        gamma:       float = 0.99,
-        eps_start:   float = 1.0,
-        eps_end:     float = 0.05,
-        eps_decay:   float = 0.9998,
-        batch_size:  int   = 512,
-        buffer_cap:  int   = 100_000,
-        target_sync: int   = 500,
-        warmup:      int   = 2_000,
-        # ── reward shaping ────────────────────────────────────────────────────
-        reward_cfg:  RewardConfig | None = None,
-        # ── performance ───────────────────────────────────────────────────────
-        learn_every: int   = 1,   # run learn() every N environment steps
-                                  # set to 2 or 4 to halve/quarter gradient cost
+        lr:           float = 3e-4,
+        gamma:        float = 0.99,
+        eps_start:    float = 1.0,
+        eps_end:      float = 0.02,
+        eps_decay:    float = 0.9995,
+        batch_size:   int   = 512,
+        buffer_cap:   int   = 100_000,
+        target_sync:  int   = 500,
+        warmup:       int   = 2_000,
+        learn_every:  int   = 4,
+        reward_cfg:   RewardConfig | None = None,
     ):
         self.gamma       = gamma
         self.eps         = eps_start
@@ -299,19 +221,19 @@ class DQNAgent:
         self.warmup      = warmup
         self.learn_every = learn_every
         self.reward_cfg  = reward_cfg or DEFAULT_REWARD_CFG
+        self.grad_steps  = 0
+        self._step_count = 0
 
         self.policy = TwoZeroFourEightNet().to(DEVICE)
         self.target = TwoZeroFourEightNet().to(DEVICE)
         self.target.load_state_dict(self.policy.state_dict())
         self.target.eval()
 
-        self.optim  = torch.optim.Adam(self.policy.parameters(), lr=lr)
-        self.buffer = ReplayBuffer(buffer_cap)
+        self.optim         = torch.optim.Adam(self.policy.parameters(), lr=lr)
+        self.buffer        = ReplayBuffer(buffer_cap)
         self.last_loss:     float = 0.0
         self.episode_count: int   = 0
-        self._step_count:   int   = 0   # total env steps for learn_every
 
-    # ── action selection ────────────────────────────────────────────────────
     @torch.no_grad()
     def act(self, state_np: np.ndarray, valid: list[int]) -> int:
         if not valid:
@@ -325,61 +247,45 @@ class DQNAgent:
             mask[a] = q[a]
         return int(mask.argmax())
 
-    # ── learning step ────────────────────────────────────────────────────────
     def learn(self) -> float | None:
         if len(self.buffer) < max(self.batch_size, self.warmup):
             return None
-
         s, a, r, ns, done = self.buffer.sample(self.batch_size)
-
-        # Double DQN: policy picks action, target evaluates it
         q_pred = self.policy(s).gather(1, a.unsqueeze(1)).squeeze(1)
-
         with torch.no_grad():
             best_next_a = self.policy(ns).argmax(1, keepdim=True)
             q_next      = self.target(ns).gather(1, best_next_a).squeeze(1)
             q_target    = r + self.gamma * q_next * (~done)
-
         loss = F.smooth_l1_loss(q_pred, q_target)
-
         self.optim.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=10.0)
         self.optim.step()
-
-        self.grad_steps = getattr(self, "grad_steps", 0) + 1
+        self.grad_steps += 1
         if self.grad_steps % self.target_sync == 0:
             self.target.load_state_dict(self.policy.state_dict())
-
         self.eps = max(self.eps_end, self.eps * self.eps_decay)
         self.last_loss = float(loss.detach().item())
         return self.last_loss
 
-    # ── episode runner ───────────────────────────────────────────────────────
     def run_episode(self, train: bool = True) -> tuple[int, int, int]:
-        """
-        Play one complete game.
-
-        Returns:
-            (final_score, max_tile_value, number_of_steps)
-        """
-        board  = Board()
-        state  = encode(board.board)
-        steps  = 0
+        board    = Board()
+        state    = encode(board.board)
+        steps    = 0
+        game_max = int(board.board.max())
 
         while not board.game_over:
-            valid  = board.valid_actions()
-            action = self.act(state, valid) if train else self._greedy(state, valid)
-
+            valid      = board.valid_actions()
+            action     = self.act(state, valid) if train else self._greedy(state, valid)
             prev_score = board.score
+            prev_max   = game_max
             board.move(DIRS[action])
-
+            game_max   = max(game_max, int(board.board.max()))
             next_state = encode(board.board)
-            done       = board.game_over
 
             if train:
-                reward = compute_reward(prev_score, board, self.reward_cfg)
-                self.buffer.push(state, action, reward, next_state, done)
+                reward = compute_reward(prev_score, prev_max, board, self.reward_cfg)
+                self.buffer.push(state, action, reward, next_state, board.game_over)
                 self._step_count += 1
                 if self._step_count % self.learn_every == 0:
                     self.learn()
@@ -401,14 +307,12 @@ class DQNAgent:
             mask[a] = q[a]
         return int(mask.argmax())
 
-    # ── evaluate ─────────────────────────────────────────────────────────────
-    def evaluate(self, n: int = 100) -> dict:
+    def evaluate(self, n: int = 100) -> dict[str, object]:
         scores, tiles = [], []
         for _ in range(n):
             s, t, _ = self.run_episode(train=False)
-            scores.append(s)
-            tiles.append(t)
-        tile_counts = {}
+            scores.append(s); tiles.append(t)
+        tile_counts: dict[int, int] = {}
         for t in tiles:
             tile_counts[t] = tile_counts.get(t, 0) + 1
         return {
@@ -420,35 +324,30 @@ class DQNAgent:
             "n":           n,
         }
 
-    # ── checkpoint ────────────────────────────────────────────────────────────
-    def save(self, path: str = "agent.pt"):
-        torch.save(
-            {
-                "policy":        self.policy.state_dict(),
-                "target":        self.target.state_dict(),
-                "optim":         self.optim.state_dict(),
-                "eps":           self.eps,
-                "grad_steps":    getattr(self, "grad_steps", 0),
-                "episode_count": self.episode_count,
-                "reward_cfg":    self.reward_cfg,
-            },
-            path,
-        )
+    def save(self, path: str = "agent.pt") -> None:
+        torch.save({
+            "policy":        self.policy.state_dict(),
+            "target":        self.target.state_dict(),
+            "optim":         self.optim.state_dict(),
+            "eps":           self.eps,
+            "grad_steps":    self.grad_steps,
+            "episode_count": self.episode_count,
+            "reward_cfg":    self.reward_cfg,
+        }, path)
 
-    def load(self, path: str):
+    def load(self, path: str) -> None:
         ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
         self.policy.load_state_dict(ckpt["policy"])
         self.target.load_state_dict(ckpt["target"])
         self.optim.load_state_dict(ckpt["optim"])
-        self.eps            = ckpt["eps"]
-        self.grad_steps     = ckpt.get("grad_steps", 0)
-        self.episode_count  = ckpt.get("episode_count", 0)
+        self.eps           = ckpt["eps"]
+        self.grad_steps    = ckpt.get("grad_steps", 0)
+        self.episode_count = ckpt.get("episode_count", 0)
         if "reward_cfg" in ckpt:
             self.reward_cfg = ckpt["reward_cfg"]
 
 
-# ─────────────────────────────── entry point ──────────────────────────────────
 if __name__ == "__main__":
     ckpt = sys.argv[1] if len(sys.argv) > 1 else None
-    from train import train # type: ignore
+    from train import train
     train(resume=ckpt)
